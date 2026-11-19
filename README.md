@@ -1,5 +1,10 @@
 # undervoice
 
+[![CI](https://github.com/Londopy/undervoice/actions/workflows/ci.yml/badge.svg)](https://github.com/Londopy/undervoice/actions/workflows/ci.yml)
+[![changelog](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Londopy/undervoice/gh-pages/changelog-badge.json)](CHANGELOG.md)
+[![License](https://img.shields.io/github/license/Londopy/undervoice)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-3776AB)](pyproject.toml)
+
 **Send your callsign, grid square and a short status during an ordinary FM voice QSO, without
 anyone stopping to send them.**
 
@@ -234,6 +239,11 @@ cd undervoice
 pip install -e .[live,dev]
 pytest
 ```
+
+## Contributing
+
+Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Anything that
+changes what goes on air has to update the Format section above in the same pull request.
 
 ## Speech recordings
 
