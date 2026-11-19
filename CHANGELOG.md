@@ -16,5 +16,7 @@ what appears on its GitHub release page.
 - Simulated FM channel (emphasis, audio filters, deviation limiter, discriminator noise,
   repeater hops, sound card clock offset) and a frame-loss sweep.
 - Live sound card transmit (mic or WAV file) and receive.
+- `rx --record` saves received audio for offline decoding, and `rx` warns when the input clips.
+- README sections on testing over the air and on the Part 97 rules.
 
 [Unreleased]: https://github.com/Londopy/undervoice/commits/main

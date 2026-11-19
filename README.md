@@ -56,8 +56,10 @@ undervoice rx --input "USB Audio"
 
 `tx` takes your mic, adds the data and sends the result to the radio's audio input; key the radio
 with its own PTT or VOX as usual. `--play` sends a recording instead of the mic. `rx` prints
-each frame as it is heard, stamped in UTC. `--level` (dB relative to the speech) and `--shape` work on every
-command that sends; `--shape` must match on both ends.
+each frame as it is heard, stamped in UTC, warns when the sound card input clips, and with
+`--record session.wav` also saves what it heard so you can run `decode` on it later. `--level`
+(dB relative to the speech) and `--shape` work on every command that sends; `--shape` must
+match on both ends.
 
 ## Results so far
 
@@ -158,17 +160,71 @@ closely.
 5. De-interleave, Viterbi-decode, and keep the frame only if the CRC, version and every field
    check out.
 
+## Testing on the air
+
+**Simplex first**, at low power on a quiet 2 m or 70 cm simplex frequency, with your callsign
+by voice as usual:
+
+1. On the receiving station, set the radio's volume so speech peaks sit well below full scale
+   on the sound card, then start `undervoice rx --input "USB Audio" --record simplex1.wav`.
+   If it warns that the input clips, turn the input level down.
+2. On the sending station, `undervoice tx --play speech.wav --call <you> --output "USB Audio"`
+   with the radio keyed for the whole recording. A recording gives the same audio every run;
+   move to the live mic once that works.
+3. Each frame needs 9.3 s of transmission, so expect one frame per 9.3 s keyed. Note how many
+   came through, and keep the recording: `undervoice decode simplex1.wav` replays the session
+   offline, and the file is what to compare against the simulator if the radio does worse.
+4. Step `--level` down from -15 dB until frames start to drop. That gives the real margin to
+   compare with the simulated tables above.
+
+**Then through a repeater**, only with its owner's permission. Repeaters often run their own
+audio processing, so repeat the simplex steps through it, record on the receiving side, and
+compare loss at the same levels. A repeater that regenerates CTCSS or runs its own limiter is
+the case the simulator models least well. Tell the owner the format is published here and
+that it carries your callsign in every frame.
+
+## Rules (US, Part 97)
+
+Read against the current eCFR text of 47 CFR Part 97 in November 2026. This is a reading of
+the rules, not legal advice; check with ARRL or the FCC before relying on it.
+
+- **The bands allow it.** On 2 m above 144.1 MHz and on all of 70 cm, 97.305(c) authorizes
+  phone and data together ("MCW, phone, image, RTTY, data, test", plus SS on 70 cm). Phone and
+  data sub-bands there come from voluntary band plans, not from the rules.
+- **Mixed emissions are named.** 97.307(f)(5) (2 m) and (f)(6) (70 cm) allow "a RTTY, data or
+  multiplexed emission", and 97.307(f)(8) also authorizes data emissions whose designator has W
+  as the third symbol, the ITU symbol for a combination of information types. FM voice with
+  this data under it is F9W: 9 is the ITU second symbol for analog and digital channels
+  together, and (f)(8) lists it. The data is 80 baud against limits of
+  19.6 kbaud (2 m) and 56 kbaud (70 cm), and it stays inside the bandwidth of the FM voice it
+  rides on, as 97.307(f)(2) requires.
+- **The code is covered by publication.** 97.309(a)(4) counts a code as specified when its
+  "technical characteristics have been documented publicly". The Format section above is that
+  documentation. 97.309(b) separately allows unspecified codes on these bands as long as they
+  are not used to obscure meaning, and lets an FCC Regional Director require a record of
+  traffic, so keep the `--record` files.
+- **Nothing is hidden in meaning.** 97.113(a)(4) bans messages encoded to obscure their
+  meaning. The data is unencrypted, the format and code are public, and every frame carries
+  the callsign in clear. Inaudible is not the same as obscured, but this is the point a
+  skeptical reader is most likely to raise, so lead with the published format.
+- **Identify by voice as usual.** 97.119 requires your callsign every 10 minutes and at the
+  end, by CW or phone. Nothing in it lets the callsign in the data count as identification.
+- **Repeaters.** 97.205(g) says the control operator of a repeater that inadvertently
+  retransmits something that breaks the rules is not accountable for it, but the repeater's
+  licensee can still limit who and what uses it (97.205(e)). Ask first.
+
+Still open, worth putting to ARRL: whether the FCC would treat this as phone, data or a
+combined emission in practice; and whether an unscreened 32-character status needs the same
+care as any other text under 97.113 (no business, no obscenity).
+
 ## Known gaps
 
 - Silence carries no data, so a frame that spans long pauses can be lost. A minimum level
   during pauses would fix this at the cost of being audible.
-- The listening test, simplex radio test and repeater test from the test plan have not been
-  done.
+- The listening test is published but has no answers yet; the simplex and repeater tests have
+  not been done.
 - `tx` starts frames when it starts and runs them back to back; a frame cut off by unkeying is
   lost.
-- Part 97 questions are still open, in particular whether data mixed into FM voice counts as a
-  separate data emission limited to the data sub-bands. Check with your repeater's owner
-  before testing through it.
 
 ## Building from source
 
