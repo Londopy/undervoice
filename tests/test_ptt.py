@@ -203,3 +203,32 @@ def test_rigctld_not_running():
         port = s.getsockname()[1]
     with pytest.raises(SetupError, match="is it running"):
         open_keyer(f"rigctld:127.0.0.1:{port}")
+
+
+def run_blocks(sender, block, count):
+    out = np.zeros((960, 1))
+    for _ in range(count):
+        sender.callback(block, out, 960, None, None)
+
+
+def test_speech_after_a_long_pause_starts_a_new_frame():
+    sender = _Sender(Message("W1AW"), -18.0, 0.5, delay=0.0)
+    talk = np.sin(np.arange(960) / 7.0)[:, None] * 0.3
+    hush = np.zeros((960, 1))
+    sender.key()
+    run_blocks(sender, talk, 50)
+    run_blocks(sender, hush, 200)
+    assert sender.mod.pos > 30000
+    run_blocks(sender, talk, 1)
+    assert sender.mod.pos <= 2 * 160
+
+
+def test_a_short_pause_keeps_the_frame_going():
+    sender = _Sender(Message("W1AW"), -18.0, 0.5, delay=0.0)
+    talk = np.sin(np.arange(960) / 7.0)[:, None] * 0.3
+    hush = np.zeros((960, 1))
+    sender.key()
+    run_blocks(sender, talk, 50)
+    run_blocks(sender, hush, 50)
+    run_blocks(sender, talk, 1)
+    assert sender.mod.pos > 15000

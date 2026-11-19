@@ -35,6 +35,12 @@ class Modulator:
         self.pending = np.zeros(0)
         self.ready = np.zeros(HOP)
 
+    def restart(self) -> None:
+        """Start the next hop at the beginning of a frame, keeping the audio already queued."""
+        self.pos = 0
+        self.zi = np.zeros(ORDER)
+        self.gain = 0.0
+
     def process(self, speech: np.ndarray) -> np.ndarray:
         """Take any number of speech samples and return as many mixed samples."""
         self.pending = np.concatenate([self.pending, speech])

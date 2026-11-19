@@ -28,6 +28,12 @@ BLOCK = 960
 BUFFER = FRAME + 5 * RATE
 EVERY = 2 * RATE
 CLIP_WARN_EVERY = 30.0
+# a pause this long (seconds) is taken as the end of an over; shorter ones are breaths and
+# gaps between sentences, which the error correction rides through
+NEW_OVER = 3.0
+SILENCE_RATIO = 0.03
+SILENCE_FLOOR = 1e-4
+PAUSE_FADE = 0.999
 
 Device = int | str | None
 
@@ -80,7 +86,9 @@ def _open(opener: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
 
 
 class _Sender:
-    """Mixes data into the mic audio while keyed and sends silence while not."""
+    """Mixes data into the mic audio while keyed and sends silence while not. A frame starts
+    with each keying and again whenever speech comes back after a pause long enough to be a
+    new over, so a radio keyed by its own PTT or VOX still gets frames lined up with overs."""
 
     def __init__(self, message: Message, level_db: float, shape: float, delay: float):
         self.args = (message, level_db, shape)
@@ -89,6 +97,8 @@ class _Sender:
         self.delay = delay
         self.keyed = False
         self.hold = 0
+        self.quiet = 0
+        self.loudest = 0.0
         self.problems: queue.Queue[str] = queue.Queue()
 
     def callback(self, indata, outdata, frames, when, status) -> None:
@@ -96,15 +106,28 @@ class _Sender:
             self.problems.put(str(status))
         speech = self.down(indata[:, 0])
         if self.keyed and self.hold <= 0:
+            self._watch_pauses(speech)
             outdata[:, 0] = self.up(self.mod.process(speech))
         else:
             self.hold -= len(speech)
             outdata[:, 0] = self.up(np.zeros(len(speech)))
 
+    def _watch_pauses(self, speech: np.ndarray) -> None:
+        level = float(np.sqrt(np.mean(speech**2)))
+        # the loudest recent speech, fading by about 4 dB over ten seconds
+        self.loudest = max(level, self.loudest * PAUSE_FADE)
+        if level < max(SILENCE_FLOOR, SILENCE_RATIO * self.loudest):
+            self.quiet += len(speech)
+            return
+        if self.quiet >= NEW_OVER * RATE:
+            self.mod.restart()
+        self.quiet = 0
+
     def key(self) -> None:
         # a fresh modulator starts a frame with each transmission, after the radio's TX delay
         self.mod = Modulator(*self.args)
         self.hold = int(self.delay * RATE)
+        self.quiet = 0
         self.keyed = True
 
     def unkey(self) -> None:
