@@ -255,6 +255,13 @@ def install(names: list[str], download: str, repo: str, version: str) -> list[st
         f"irm https://github.com/{repo}/releases/latest/download/install.ps1 | iex",
         "```",
         "",
+        "**Scoop:**",
+        "",
+        "```powershell",
+        "scoop bucket add londopy https://github.com/Londopy/scoop-bucket",
+        "scoop install londopy/undervoice",
+        "```",
+        "",
         "**Python**, on any OS: installs the `undervoice` command and the window, which "
         "`undervoice-gui` opens.",
         "",

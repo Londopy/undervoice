@@ -4,6 +4,10 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- Install with Scoop: `scoop bucket add londopy https://github.com/Londopy/scoop-bucket`, then `scoop install londopy/undervoice`.
+
 ## [0.2.0] - 2026-11-19
 
 ### Added

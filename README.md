@@ -48,6 +48,13 @@ Options: `-Msi`, `-Portable`, `-AllUsers`, `-Version 0.2.0`, `-NoShortcut`, `-Dr
 them, run the script as a block:
 `& ([scriptblock]::Create((irm https://github.com/Londopy/undervoice/releases/latest/download/install.ps1))) -Portable`
 
+**Scoop:**
+
+```powershell
+scoop bucket add londopy https://github.com/Londopy/scoop-bucket
+scoop install londopy/undervoice
+```
+
 **MSI for every user** (admin): `msiexec /i undervoice-<version>-x64.msi ALLUSERS=2 MSIINSTALLPERUSER=""`.
 Add `DESKTOPSHORTCUT=0` to skip the desktop icon.
 
