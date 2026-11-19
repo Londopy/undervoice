@@ -8,8 +8,12 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tomllib
+from pathlib import Path
 from tkinter import filedialog, font, ttk
+from typing import Any
 
+from . import _config, _updater
 from ._audio import read_wav
 from ._live import Listener, Transmitter, cards, play, stop_playing
 from ._message import Message
@@ -30,6 +34,7 @@ DARK = {
     "meter": "#3a3a3a",
 }
 NO_PTT = "None: VOX (SignaLink and similar) or I key the radio myself"
+CHANNELS = ["stable releases", "beta (pre-releases too)"]
 
 
 def _windows_setting(path: str, name: str) -> int | None:
@@ -85,7 +90,7 @@ def _icon(accent: str) -> tk.PhotoImage:
 
 
 class App:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, settings_path: Path | None = None):
         self.root = root
         self.dark = _dark_mode()
         self.c = {**(DARK if self.dark else LIGHT), "accent": _accent(self.dark)}
@@ -93,8 +98,17 @@ class App:
         self.tx: Transmitter | None = None
         self.ptt: Keyer | None = None
         self.sending = False
-        self.events: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.record_path: str | None = None
+        self.settings_path = settings_path or _config.folder() / "config.toml"
+        self.checking = False
+        self.available: _updater.Release | None = None
+        settings_problem = None
+        try:
+            self.settings = _config.load(self.settings_path)
+        except tomllib.TOMLDecodeError as e:
+            self.settings = _config.defaults()
+            settings_problem = f"{self.settings_path} is not valid TOML ({e}); using defaults."
 
         root.title("undervoice")
         self._icon = _icon(self.c["accent"])
@@ -117,13 +131,18 @@ class App:
         self._station(outer).grid(row=0, column=0, sticky="ew")
         self._radio(outer).grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self._receive(outer).grid(row=2, column=0, sticky="nsew", pady=(8, 0))
+        self._updates(outer).grid(row=3, column=0, sticky="ew", pady=(8, 0))
         self._status_bar(root)
+        self._apply_settings()
 
         root.bind("<Escape>", lambda e: self.stop_sending())
         root.protocol("WM_DELETE_WINDOW", self.close)
         self._check_message()
-        if setup_problem:
-            self.say(setup_problem, error=True)
+        _updater.tidy()
+        if setup_problem or settings_problem:
+            self.say(setup_problem or settings_problem or "", error=True)
+        elif self.call.get():
+            self.say("Ready.")
         else:
             self.say("Fill in your station and pick the sound cards.")
         root.after(100, self._poll)
@@ -187,7 +206,7 @@ class App:
             return str(e)
         return None
 
-    def _field(self, parent: ttk.Frame, text: str, widget: tk.Widget, row: int, col: int) -> None:
+    def _field(self, parent: tk.Misc, text: str, widget: tk.Widget, row: int, col: int) -> None:
         ttk.Label(parent, text=text).grid(row=row, column=col, sticky="w", padx=(0, 10))
         widget.grid(row=row + 1, column=col, sticky="ew", padx=(0, 10), pady=(2, 6))
 
@@ -206,7 +225,7 @@ class App:
         self.message_error.grid(row=2, column=0, columnspan=3, sticky="w")
         return f
 
-    def _combo(self, parent: ttk.Frame, names: list[str], default: str | None) -> ttk.Combobox:
+    def _combo(self, parent: tk.Misc, names: list[str], default: str | None) -> ttk.Combobox:
         box = ttk.Combobox(parent, values=names, state="readonly")
         if names:
             box.set(default if default in names else names[0])
@@ -299,6 +318,154 @@ class App:
         )
         self.empty.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
         return f
+
+    def _updates(self, parent: ttk.Frame) -> ttk.LabelFrame:
+        f = ttk.LabelFrame(parent, text="Updates", padding=(10, 6))
+        f.columnconfigure(6, weight=1)
+        u = self.settings["updater"]
+        self.auto_update = tk.BooleanVar(value=bool(u["enabled"]))
+        ttk.Checkbutton(f, text="Check every", variable=self.auto_update).grid(row=0, column=0)
+        self.interval = tk.StringVar(value=str(u["check_interval_h"]))
+        ttk.Spinbox(f, from_=1, to=168, increment=1, textvariable=self.interval, width=5).grid(
+            row=0, column=1, padx=(4, 4)
+        )
+        ttk.Label(f, text="hours on the").grid(row=0, column=2)
+        self.channel = ttk.Combobox(f, values=CHANNELS, state="readonly", width=20)
+        self.channel.set(CHANNELS[1] if u["channel"] == "beta" else CHANNELS[0])
+        self.channel.grid(row=0, column=3, padx=(4, 10))
+        ttk.Button(f, text="Check now", command=lambda: self.check_updates(manual=True)).grid(
+            row=0, column=4
+        )
+        self.update_button = ttk.Button(f, command=self.install_update)
+        self.update_button.grid(row=0, column=5, padx=(8, 0))
+        self.update_button.grid_remove()
+        self.update_status = ttk.Label(
+            f,
+            text=f"This is undervoice {_updater.current()}. "
+            "Updates are checked against their SHA-256 before they install.",
+            style="Muted.TLabel",
+        )
+        self.update_status.grid(row=1, column=0, columnspan=7, sticky="w", pady=(4, 0))
+        return f
+
+    def _apply_settings(self) -> None:
+        station = self.settings.get("station", {})
+        self.call.set(station.get("call", ""))
+        self.grid_sq.set(station.get("grid", ""))
+        self.text.set(station.get("status", ""))
+        radio = self.settings.get("radio", {})
+        for box, key in (
+            (self.mic, "mic"),
+            (self.to_radio, "to_radio"),
+            (self.from_radio, "from_radio"),
+        ):
+            if radio.get(key) in box.cget("values"):
+                box.set(radio[key])
+        label = next((lb for lb, how in self.keyers if how and how == radio.get("ptt")), None)
+        if label:
+            self.ptt_box.set(label)
+        for var, key in ((self.level, "level"), (self.shape, "shape"), (self.txdelay, "txdelay")):
+            if key in radio:
+                var.set(str(radio[key]))
+
+    def _save_settings(self) -> None:
+        how = next((h for lb, h in self.keyers if lb == self.ptt_box.get()), None)
+        self.settings["station"] = {
+            "call": self.call.get().strip(),
+            "grid": self.grid_sq.get().strip(),
+            "status": self.text.get().strip(),
+        }
+        self.settings["radio"] = {
+            "mic": self.mic.get(),
+            "to_radio": self.to_radio.get(),
+            "from_radio": self.from_radio.get(),
+            "ptt": how or "",
+            "level": self.level.get(),
+            "shape": self.shape.get(),
+            "txdelay": self.txdelay.get(),
+        }
+        u = self.settings["updater"]
+        u["enabled"] = self.auto_update.get()
+        u["channel"] = "beta" if self.channel.get() == CHANNELS[1] else "stable"
+        try:
+            u["check_interval_h"] = min(max(int(float(self.interval.get())), 1), 168)
+        except ValueError:
+            pass
+        try:
+            _config.save(self.settings, self.settings_path)
+        except OSError as e:
+            self.say(f"Can't save settings to {self.settings_path}: {e}", error=True)
+
+    def check_updates(self, manual: bool = False) -> None:
+        if self.checking:
+            return
+        self.checking = True
+        u = self.settings["updater"]
+        u["last_check"] = int(time.time())
+        self._save_settings()
+        channel = u["channel"]
+        if manual:
+            self.update_status.configure(text="Checking for updates...", foreground="")
+
+        def work() -> None:
+            try:
+                self.events.put(("update", (_updater.newer(channel), manual)))
+            except _updater.UpdateError as e:
+                self.events.put(("update-failed", (str(e), manual)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _update_due(self) -> bool:
+        u = self.settings["updater"]
+        if not self.auto_update.get() or self.checking:
+            return False
+        try:
+            hours = min(max(float(self.interval.get()), 1), 168)
+        except ValueError:
+            return False
+        return time.time() - float(u["last_check"]) >= hours * 3600
+
+    def _show_update(self, release: _updater.Release | None, manual: bool) -> None:
+        self.checking = False
+        self.available = release
+        if release is None:
+            if manual:
+                self.update_status.configure(
+                    text=f"undervoice {_updater.current()} is the newest version.",
+                    foreground=self.c["rx"],
+                )
+            return
+        if _updater.how_installed() == "pip":
+            self.update_status.configure(
+                text=f"undervoice {release.version} is out. This copy came from pip: "
+                "run pip install -U undervoice[live] to update.",
+                foreground=self.c["accent"],
+            )
+            return
+        self.update_status.configure(
+            text=f"undervoice {release.version} is out (you have {_updater.current()}).",
+            foreground=self.c["accent"],
+        )
+        self.update_button.configure(text=f"Download and install {release.version}")
+        self.update_button.grid()
+
+    def install_update(self) -> None:
+        release = self.available
+        if release is None:
+            return
+        self.stop_sending()
+        self._save_settings()
+        self.update_button.state(["disabled"])
+        self.update_status.configure(text=f"Downloading undervoice {release.version}...")
+
+        def work() -> None:
+            try:
+                _updater.install(release)
+                self.events.put(("restart", None))
+            except (_updater.UpdateError, OSError) as e:
+                self.events.put(("install-failed", str(e)))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _status_bar(self, root: tk.Tk) -> None:
         bar = ttk.Frame(root, padding=(12, 6))
@@ -400,6 +567,7 @@ class App:
             self._release_ptt()
             self.say(str(e), error=True)
             return
+        self._save_settings()
         how = f"keyed by {self.ptt.name}" if self.ptt else "key the radio yourself"
         self.say(f"Sending {message} under the microphone audio ({how}).")
         self._show_state()
@@ -492,6 +660,7 @@ class App:
         except SetupError as e:
             self.say(str(e), error=True)
             return
+        self._save_settings()
         self.say(
             f"Listening on {self.from_radio.get()}"
             + (f", recording to {self.record_path}." if self.record_path else ".")
@@ -531,14 +700,31 @@ class App:
                 self.stop_sending()
                 self.say("The sound card stopped while transmitting.", error=True)
         while not self.events.empty():
-            kind, detail = self.events.get()
-            if kind == "error":
-                self.say(detail, error=True)
-            else:
-                self.sending = False
-                self._release_ptt()
-                self._show_state()
+            self._event(*self.events.get())
+        if self._update_due():
+            self.check_updates()
         self.root.after(100, self._poll)
+
+    def _event(self, kind: str, detail: Any) -> None:
+        if kind == "error":
+            self.say(str(detail), error=True)
+        elif kind == "sent":
+            self.sending = False
+            self._release_ptt()
+            self._show_state()
+        elif kind == "update":
+            release, manual = detail
+            self._show_update(release, manual)
+        elif kind == "update-failed":
+            message, manual = detail
+            self.checking = False
+            if manual:
+                self.update_status.configure(text=message, foreground=self.c["tx"])
+        elif kind == "install-failed":
+            self.update_button.state(["!disabled"])
+            self.update_status.configure(text=str(detail), foreground=self.c["tx"])
+        elif kind == "restart":
+            self.close()
 
     def _draw_meter(self, peak: float | None) -> None:
         self.meter.delete("all")
@@ -552,6 +738,7 @@ class App:
         self.meter_text.configure(text=f"{db:.0f} dBFS")
 
     def close(self) -> None:
+        self._save_settings()
         self.stop_sending()
         if self.listener:
             self.listener.stop()

@@ -10,6 +10,7 @@ import pytest
 from scipy.signal import resample_poly
 
 from undervoice import FRAME, Message, encode, read_wav
+from undervoice._config import load as load_settings
 from undervoice._live import BLOCK, Listener
 
 SPEECH = Path(__file__).parent.parent / "speech" / "OSR_us_000_0010_8k.wav"
@@ -82,7 +83,8 @@ def test_listener_reports_each_frame_once(fake_sd, tmp_path):
     assert len(read_wav(tmp_path / "rx.wav")) > 0.9 * len(speech)
 
 
-def test_window_enables_transmit_only_for_a_valid_station(fake_sd, monkeypatch):
+@pytest.fixture
+def window(fake_sd, monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "hid", types.SimpleNamespace(enumerate=lambda: []))
     from undervoice._gui import App
 
@@ -91,16 +93,38 @@ def test_window_enables_transmit_only_for_a_valid_station(fake_sd, monkeypatch):
     except tk.TclError:
         pytest.skip("no display")
     root.withdraw()
+    path = tmp_path / "config.toml"
+    path.write_text("[updater]\nenabled = false\n", encoding="utf-8")
+    yield lambda: App(root, path), path
     try:
-        app = App(root)
-        assert app.inputs == [(0, "Mic"), (1, "USB Audio Device")]
-        assert app.to_radio.get() == "USB Audio Device"
-        assert app.tx_button.instate(["disabled"])
-        app.call.set("w1aw")
-        app.grid_sq.set("FN31pr")
-        assert not app.tx_button.instate(["disabled"])
-        app.text.set("price: $5")
-        assert app.tx_button.instate(["disabled"])
-        assert "outside A-Z" in app.message_error.cget("text")
-    finally:
         root.destroy()
+    except tk.TclError:
+        pass
+
+
+def test_window_enables_transmit_only_for_a_valid_station(window):
+    make, _ = window
+    app = make()
+    assert app.inputs == [(0, "Mic"), (1, "USB Audio Device")]
+    assert app.to_radio.get() == "USB Audio Device"
+    assert app.tx_button.instate(["disabled"])
+    app.call.set("w1aw")
+    app.grid_sq.set("FN31pr")
+    assert not app.tx_button.instate(["disabled"])
+    app.text.set("price: $5")
+    assert app.tx_button.instate(["disabled"])
+    assert "outside A-Z" in app.message_error.cget("text")
+
+
+def test_window_remembers_settings(window):
+    make, path = window
+    app = make()
+    app.call.set("W1AW")
+    app.text.set("MOBILE")
+    app.mic.set("USB Audio Device")
+    app.level.set("-21")
+    app.close()
+    saved = load_settings(path)
+    assert saved["station"]["call"] == "W1AW"
+    assert saved["radio"]["mic"] == "USB Audio Device"
+    assert saved["updater"]["enabled"] is False
