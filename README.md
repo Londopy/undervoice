@@ -123,7 +123,8 @@ or `undervoice-gui`, which opens without a console window on Windows. Fill in yo
 grid and status, pick the microphone, the sound card going to the radio and the one coming
 from it, and the PTT interface if you have one. **Transmit** keys the radio (through PTT, or
 you key it yourself) and mixes the data into your microphone audio until you press it again
-or hit Esc; **Send a recording...** does the same with a WAV file. **Start listening** fills
+or hit Esc. Or hold **Space** to talk and let go to stop, like a PTT button (buttons take Enter
+instead of Space in this window). **Send a recording...** does the same with a WAV file. **Listen** fills
 the Heard table with each frame as it decodes, newest first, shows the input level so you can
 set the radio's volume, and can record the session to a file. The window follows Windows'
 light or dark setting.
@@ -147,7 +148,9 @@ undervoice tx --call W1AW --input "Headset" --output "USB Audio" --ptt COM5
 
 With `--play` the radio is keyed for the whole recording. With the mic, press Enter to key and
 Enter again to unkey; each transmission starts a fresh frame, so none is cut off by unkeying
-mid-frame unless the transmission itself is shorter than 9.3 s. `--txdelay` (default 0.3 s) is
+mid-frame unless the transmission itself is shorter than 9.3 s. A fresh frame also starts
+whenever you start talking again after 3 s of silence, so overs keyed by the radio's own PTT
+or a VOX interface line up with frames too. `--txdelay` (default 0.3 s) is
 how long the radio gets to come up to power before audio starts. CM108 interfaces usually wire
 PTT to GPIO 3; use `--ptt-gpio` if yours differs. The serial port's lines are held low while it
 opens, so opening it does not key the radio. On Linux the user needs write access to the

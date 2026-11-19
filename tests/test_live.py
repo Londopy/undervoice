@@ -40,10 +40,27 @@ class FakeInput:
         self.active = False
 
 
+class FakeDuplex:
+    """A duplex stream that only records whether it is running."""
+
+    def __init__(self, rate, blocksize, device, channels, callback):
+        self.active = False
+
+    def start(self):
+        self.active = True
+
+    def stop(self):
+        self.active = False
+
+    def close(self):
+        pass
+
+
 @pytest.fixture
 def fake_sd(monkeypatch):
     module = types.SimpleNamespace(
         InputStream=FakeInput,
+        Stream=FakeDuplex,
         PortAudioError=type("PortAudioError", (Exception,), {}),
         default=types.SimpleNamespace(hostapi=0),
         query_devices=lambda: [
@@ -83,23 +100,30 @@ def test_listener_reports_each_frame_once(fake_sd, tmp_path):
     assert len(read_wav(tmp_path / "rx.wav")) > 0.9 * len(speech)
 
 
+@pytest.fixture(scope="session")
+def tk_root():
+    # one Tk per test run: Windows Tk can fail to start a second interpreter in a process
+    try:
+        root = tk.Tk()
+    except tk.TclError as e:
+        pytest.skip(f"no display: {e}")
+    root.withdraw()
+    yield root
+    root.destroy()
+
+
 @pytest.fixture
-def window(fake_sd, monkeypatch, tmp_path):
+def window(fake_sd, monkeypatch, tmp_path, tk_root):
     monkeypatch.setitem(sys.modules, "hid", types.SimpleNamespace(enumerate=lambda: []))
     from undervoice._gui import App
 
-    try:
-        root = tk.Tk()
-    except tk.TclError:
-        pytest.skip("no display")
-    root.withdraw()
+    top = tk.Toplevel(tk_root)
+    top.withdraw()
     path = tmp_path / "config.toml"
     path.write_text("[updater]\nenabled = false\n", encoding="utf-8")
-    yield lambda: App(root, path), path
-    try:
-        root.destroy()
-    except tk.TclError:
-        pass
+    yield lambda: App(top, path), path
+    if top.winfo_exists():
+        top.destroy()
 
 
 def test_window_enables_transmit_only_for_a_valid_station(window):
@@ -128,3 +152,29 @@ def test_window_remembers_settings(window):
     assert saved["station"]["call"] == "W1AW"
     assert saved["radio"]["mic"] == "USB Audio Device"
     assert saved["updater"]["enabled"] is False
+
+
+def test_holding_space_transmits_until_it_is_released(window):
+    make, _ = window
+    app = make()
+    app.call.set("W1AW")
+    app._space_down(None)
+    first = app.tx
+    assert first is not None and first.active
+    # Windows repeats the key press while it is held; X11 repeats press and release
+    app._space_down(None)
+    app._space_up(None)
+    app._space_down(None)
+    assert app.tx is first
+    app._space_up(None)
+    time.sleep(0.15)
+    app.root.update()
+    assert app.tx is None
+    assert not first.active
+
+
+def test_space_does_nothing_without_a_valid_station(window):
+    make, _ = window
+    app = make()
+    app._space_down(None)
+    assert app.tx is None

@@ -7,6 +7,8 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 ### Added
 
 - Install with Scoop: `scoop bucket add londopy https://github.com/Londopy/scoop-bucket`, then `scoop install londopy/undervoice`.
+- Hold Space in the window to talk, and let go to stop. Buttons there take Enter instead of Space.
+- A fresh frame starts whenever speech comes back after 3 s of silence, so overs keyed by the radio's own PTT or a VOX interface line up with frames.
 
 ## [0.2.0] - 2026-11-19
 

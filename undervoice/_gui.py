@@ -66,7 +66,7 @@ def _accent(dark: bool) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def _dark_title_bar(root: tk.Tk) -> None:
+def _dark_title_bar(root: tk.Tk | tk.Toplevel) -> None:
     if sys.platform != "win32":
         return
     import ctypes
@@ -90,7 +90,7 @@ def _icon(accent: str) -> tk.PhotoImage:
 
 
 class App:
-    def __init__(self, root: tk.Tk, settings_path: Path | None = None):
+    def __init__(self, root: tk.Tk | tk.Toplevel, settings_path: Path | None = None):
         self.root = root
         self.dark = _dark_mode()
         self.c = {**(DARK if self.dark else LIGHT), "accent": _accent(self.dark)}
@@ -98,6 +98,8 @@ class App:
         self.tx: Transmitter | None = None
         self.ptt: Keyer | None = None
         self.sending = False
+        self.held = False
+        self.release_pending: str | None = None
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.record_path: str | None = None
         self.settings_path = settings_path or _config.folder() / "config.toml"
@@ -136,6 +138,11 @@ class App:
         self._apply_settings()
 
         root.bind("<Escape>", lambda e: self.stop_sending())
+        root.bind("<KeyPress-space>", self._space_down)
+        root.bind("<KeyRelease-space>", self._space_up)
+        # Space is the talk key here, so buttons take Enter instead of Space
+        root.unbind_class("TButton", "<Key-space>")
+        root.bind_class("TButton", "<Return>", lambda e: e.widget.tk.call(str(e.widget), "invoke"))
         root.protocol("WM_DELETE_WINDOW", self.close)
         self._check_message()
         _updater.tidy()
@@ -271,7 +278,7 @@ class App:
             actions, text="Send recording...", width=18, command=self.toggle_recording
         )
         self.send_button.grid(row=0, column=1)
-        ttk.Label(actions, text="Esc stops transmitting", style="Muted.TLabel").grid(
+        ttk.Label(actions, text="or hold Space to talk; Esc stops", style="Muted.TLabel").grid(
             row=0, column=2, padx=(12, 0)
         )
         return f
@@ -467,7 +474,7 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _status_bar(self, root: tk.Tk) -> None:
+    def _status_bar(self, root: tk.Tk | tk.Toplevel) -> None:
         bar = ttk.Frame(root, padding=(12, 6))
         bar.pack(fill="x", side="bottom")
         bar.columnconfigure(1, weight=1)
@@ -543,6 +550,32 @@ class App:
         self.rx_button.configure(text="Stop listening" if self.listener else "Listen")
         self.rx_button.state(["!disabled"] if self.inputs else ["disabled"])
 
+    def _typing(self) -> bool:
+        return isinstance(self.root.focus_get(), (ttk.Entry, tk.Entry, ttk.Checkbutton))
+
+    def _space_down(self, event: tk.Event) -> str | None:
+        if self._typing():
+            return None
+        if self.release_pending:
+            # key repeat on some systems sends release-press pairs while the key is held
+            self.root.after_cancel(self.release_pending)
+            self.release_pending = None
+        elif not self.tx and not self.sending and self.message_ok:
+            self.toggle_tx()
+            self.held = self.tx is not None
+        return "break"
+
+    def _space_up(self, event: tk.Event) -> str | None:
+        if self._typing() or not self.held:
+            return None
+        self.release_pending = self.root.after(80, self._release_talk)
+        return "break"
+
+    def _release_talk(self) -> None:
+        self.release_pending = None
+        self.held = False
+        self.stop_sending()
+
     def toggle_tx(self) -> None:
         if self.tx:
             self.stop_sending()
@@ -612,6 +645,7 @@ class App:
         self._show_state()
 
     def stop_sending(self) -> None:
+        self.held = False
         if self.tx:
             self.tx.close()
             self.tx = None
