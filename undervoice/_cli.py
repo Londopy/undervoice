@@ -17,6 +17,7 @@ from ._message import Message
 from ._modulator import LEVEL_DB, SHAPE, encode
 from ._ptt import Keyer, SetupError, open_keyer
 from ._sweep import sweep
+from ._updater import current
 from ._waveform import RATE
 
 
@@ -75,6 +76,7 @@ def _add_tuning(p: argparse.ArgumentParser, level: bool = True) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="undervoice", description=__doc__)
+    parser.add_argument("--version", action="version", version=f"undervoice {current()}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("encode", help="mix data under the speech in a WAV file")
@@ -201,9 +203,11 @@ def _run(args: argparse.Namespace) -> int:
         message = _message(args)
         with _keyer(args) as ptt:
             if args.play:
-                speech = read_wav(args.play)
-                print(f"playing {len(speech) / RATE:.1f} s with {message}")
-                _live.play(speech, message, args.level, args.shape, args.output, ptt, args.txdelay)
+                recording = read_wav(args.play)
+                print(f"playing {len(recording) / RATE:.1f} s with {message}")
+                _live.play(
+                    recording, message, args.level, args.shape, args.output, ptt, args.txdelay
+                )
             else:
                 _live.transmit(
                     message, args.level, args.shape, args.input, args.output, ptt, args.txdelay
