@@ -1,0 +1,43 @@
+name: Bug report
+description: Something does not work, or frames do not decode when they should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and output
+      description: The exact undervoice command and everything it printed.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup
+      description: >
+        undervoice version (pip show undervoice), Python version, OS. For on-air problems:
+        radios, sound card interfaces, band, simplex or repeater, and the --level and --shape
+        you used.
+    validations:
+      required: true
+  - type: textarea
+    id: recording
+    attributes:
+      label: Recording
+      description: >
+        If decoding failed, attach the received audio (rx --record) as a zipped WAV. It is the
+        fastest way to find out why.
+  - type: input
+    id: ai
+    attributes:
+      label: AI tools
+      description: Did an AI tool write or summarize this report? "No", or which one.
+    validations:
+      required: true

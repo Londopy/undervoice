@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest a change or something new
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to do
+      description: The situation on the air or at the bench, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: >
+        Your idea, if you have one. Changes to what goes on air also change the published
+        format, so say whether old and new stations would still understand each other.
+  - type: input
+    id: ai
+    attributes:
+      label: AI tools
+      description: Did an AI tool write or summarize this request? "No", or which one.
+    validations:
+      required: true
