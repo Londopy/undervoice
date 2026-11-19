@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "undervoice"
+version = "0.1.0"
+description = "Slow data channel hidden under FM voice for amateur radio"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Londopy" }]
+requires-python = ">=3.10"
+dependencies = ["numpy>=2.0", "scipy>=1.13"]
+keywords = ["amateur radio", "ham radio", "fm", "spread spectrum", "data under voice", "modem"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Telecommunications Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Ham Radio",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+]
+
+[project.optional-dependencies]
+live = ["sounddevice>=0.5.6"]
+dev = ["pytest>=9.0", "ruff>=0.16"]
+all = ["undervoice[live]"]
+
+[project.scripts]
+undervoice = "undervoice._cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Londopy/undervoice"
+Repository = "https://github.com/Londopy/undervoice"
+"Bug Tracker" = "https://github.com/Londopy/undervoice/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["undervoice"]
+
+[tool.hatch.build.targets.sdist]
+# the speech recordings are 2 MB of test data; tests that need them skip without them
+exclude = ["speech/", "listen/"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# Pinned explicitly rather than inherited: ruff's default selection grows over
+# time, and an unpinned CI ruff could turn a green build red without a commit.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
