@@ -6,7 +6,7 @@ import pytest
 
 from undervoice import Message
 from undervoice._live import _Sender
-from undervoice._ptt import Ptt
+from undervoice._ptt import Ptt, SetupError
 
 CM108 = {
     "vendor_id": 0x0D8C,
@@ -71,7 +71,7 @@ def test_unkeys_when_interrupted(hid):
 def test_needs_a_choice_between_two_interfaces(hid, monkeypatch):
     second = dict(CM108, path=b"aioc", vendor_id=0x1209, product_id=0x7388)
     monkeypatch.setattr(hid, "enumerate", lambda: [CM108, second])
-    with pytest.raises(SystemExit, match="pick one"):
+    with pytest.raises(SetupError, match="pick one"):
         Ptt()
     Ptt(1)
     assert hid.log[0] == ("open", b"aioc")
@@ -79,7 +79,7 @@ def test_needs_a_choice_between_two_interfaces(hid, monkeypatch):
 
 def test_no_interface(hid, monkeypatch):
     monkeypatch.setattr(hid, "enumerate", lambda: [MOUSE])
-    with pytest.raises(SystemExit, match="no CM108"):
+    with pytest.raises(SetupError, match="no CM108"):
         Ptt()
 
 

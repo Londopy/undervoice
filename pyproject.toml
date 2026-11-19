@@ -34,6 +34,9 @@ all = ["undervoice[live]"]
 [project.scripts]
 undervoice = "undervoice._cli:main"
 
+[project.gui-scripts]
+undervoice-gui = "undervoice._gui:run"
+
 [project.urls]
 Homepage = "https://github.com/Londopy/undervoice"
 Repository = "https://github.com/Londopy/undervoice"

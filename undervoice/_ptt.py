@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from types import ModuleType, TracebackType
 from typing import Any
 
@@ -12,11 +11,15 @@ VENDORS = {0x0D8C, 0x0C76}
 AIOC = (0x1209, 0x7388)
 
 
+class SetupError(Exception):
+    """A sound card or PTT interface can't be used as asked; the message says why."""
+
+
 def _hid() -> ModuleType:
     try:
         import hid
     except ImportError as e:
-        raise ImportError("PTT keying needs hidapi: pip install undervoice[live]") from e
+        raise SetupError("PTT keying needs hidapi: pip install undervoice[live]") from e
     return hid
 
 
@@ -41,17 +44,20 @@ class Ptt:
     def __init__(self, choice: int | None = None, gpio: int = 3):
         found = find()
         if not found:
-            sys.exit("no CM108-type USB radio interface found for PTT")
+            raise SetupError("no CM108-type USB radio interface found for PTT")
         if choice is None and len(found) > 1:
             names = "; ".join(f"{i}: {describe(d)}" for i, d in enumerate(found))
-            sys.exit(f"more than one interface can key PTT, pick one with --ptt N: {names}")
+            raise SetupError(f"more than one interface can key PTT, pick one with --ptt N: {names}")
         index = choice or 0
         if index >= len(found):
-            sys.exit(f"no PTT interface number {index}; undervoice devices lists them")
+            raise SetupError(f"no PTT interface number {index}; undervoice devices lists them")
         self.name = describe(found[index])
         self.mask = 1 << (gpio - 1)
         self.dev = _hid().device()
-        self.dev.open_path(found[index]["path"])
+        try:
+            self.dev.open_path(found[index]["path"])
+        except OSError as e:
+            raise SetupError(f"can't open {self.name} for PTT: {e}") from e
 
     def key(self, on: bool) -> None:
         # report 0, then the CM108's four output bytes: reserved, GPIO direction, GPIO level,

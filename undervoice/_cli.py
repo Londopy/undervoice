@@ -15,7 +15,7 @@ from ._channel import fm_channel
 from ._demodulator import decode
 from ._message import Message
 from ._modulator import LEVEL_DB, SHAPE, encode
-from ._ptt import Ptt
+from ._ptt import Ptt, SetupError
 from ._sweep import sweep
 from ._waveform import RATE
 
@@ -40,10 +40,7 @@ def level_list(value: str) -> list[float]:
 def _keyer(args: argparse.Namespace) -> AbstractContextManager[Ptt | None]:
     if args.ptt is None:
         return nullcontext(None)
-    try:
-        return Ptt(None if args.ptt == "auto" else args.ptt, args.ptt_gpio)
-    except ImportError as e:
-        sys.exit(str(e))
+    return Ptt(None if args.ptt == "auto" else args.ptt, args.ptt_gpio)
 
 
 def _message(args: argparse.Namespace) -> Message:
@@ -150,6 +147,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--record", metavar="WAV", help="also save the received audio to this file")
 
     sub.add_parser("devices", help="list sound devices")
+    sub.add_parser("gui", help="open the undervoice window")
     return parser
 
 
@@ -157,6 +155,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         return _run(args)
+    except SetupError as e:
+        sys.exit(str(e))
     except KeyboardInterrupt:
         return 130
 
@@ -202,6 +202,7 @@ def _run(args: argparse.Namespace) -> int:
         with _keyer(args) as ptt:
             if args.play:
                 speech = read_wav(args.play)
+                print(f"playing {len(speech) / RATE:.1f} s with {message}")
                 _live.play(speech, message, args.level, args.shape, args.output, ptt, args.txdelay)
             else:
                 _live.transmit(
@@ -211,4 +212,9 @@ def _run(args: argparse.Namespace) -> int:
         _live.receive(args.shape, args.input, args.record)
     elif args.command == "devices":
         _live.devices()
+    elif args.command == "gui":
+        # some minimal Linux Pythons ship without tkinter, so only this command needs it
+        from ._gui import run
+
+        run()
     return 0

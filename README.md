@@ -66,6 +66,21 @@ each frame as it is heard, stamped in UTC, warns when the sound card input clips
 (dB relative to the speech) and `--shape` work on every command that sends; `--shape` must
 match on both ends.
 
+### The window
+
+```powershell
+undervoice gui
+```
+
+or `undervoice-gui`, which opens without a console window on Windows. Fill in your callsign,
+grid and status, pick the microphone, the sound card going to the radio and the one coming
+from it, and the PTT interface if you have one. **Transmit** keys the radio (through PTT, or
+you key it yourself) and mixes the data into your microphone audio until you press it again
+or hit Esc; **Send a recording...** does the same with a WAV file. **Start listening** fills
+the Heard table with each frame as it decodes, newest first, shows the input level so you can
+set the radio's volume, and can record the session to a file. The window follows Windows'
+light or dark setting.
+
 ### Keying the radio
 
 Most USB radio interfaces (DMK URI, RIM-Lite, the AIOC cable and other CM108-based ones) key
