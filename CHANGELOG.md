@@ -4,11 +4,21 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-19
+
 ### Added
 
 - `tx --ptt` keys the radio through a CM108-type USB interface's GPIO (DMK URI, AIOC), a serial port's RTS or DTR line (Digirig), or a CAT command through Hamlib's rigctld, with `--txdelay` for the radio to come up to power. In mic mode Enter keys and unkeys, and each transmission starts a fresh frame.
 - `undervoice devices` lists every way this machine can key the radio.
-- A window (`undervoice gui`, or `undervoice-gui` with no console on Windows) with station details, sound card and PTT pickers, transmit and send-a-recording buttons, an input level meter and a table of frames heard.
+- A window (`undervoice gui`, or `undervoice-gui` with no console on Windows) with station details, sound card and PTT pickers, transmit and send-a-recording buttons, an input level meter and a table of frames heard. It follows the Windows light or dark setting and accent color.
+- The window remembers your station, sound cards, PTT and levels in `config.toml`.
+- Update checks against GitHub Releases, on a schedule and on demand. An update installs only when you click **Download and install**, and only after it matches the release's SHA-256.
+- Windows downloads: a per-user installer, an MSI, a portable exe and zip, `install.ps1` and `install.cmd`, with torrents and magnet links for each and `SHA256SUMS.txt` over all of them.
+- `undervoice --version`.
+
+### Changed
+
+- Needs Python 3.11 or newer; 3.10 reached its end of life in October 2026.
 
 ## [0.1.0] - 2026-11-19
 
@@ -22,5 +32,6 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 - `rx --record` saves received audio for offline decoding, and `rx` warns when the input clips.
 - README sections on testing over the air and on the Part 97 rules.
 
-[Unreleased]: https://github.com/Londopy/undervoice/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Londopy/undervoice/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Londopy/undervoice/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Londopy/undervoice/releases/tag/v0.1.0
