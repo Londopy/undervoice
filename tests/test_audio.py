@@ -1,6 +1,7 @@
 import numpy as np
 
-from undervoice._audio import Decimator, Interpolator, resample_at
+from undervoice._audio import Decimator, Interpolator, read_wav, resample_at
+from undervoice._live import _recorder
 
 
 def _in_blocks(convert, x, sizes):
@@ -35,3 +36,12 @@ def test_resample_at_fractional_times():
     np.testing.assert_allclose(
         resample_at(x, when), np.sin(2 * np.pi * 700 * when / 8000), atol=1e-3
     )
+
+
+def test_recorder_writes_what_it_is_given(tmp_path):
+    path = tmp_path / "rx.wav"
+    blocks = [np.full(160, 0.25), np.full(160, -0.5)]
+    with _recorder(str(path)) as save:
+        for b in blocks:
+            save(b)
+    np.testing.assert_allclose(read_wav(path), np.concatenate(blocks), atol=1e-4)

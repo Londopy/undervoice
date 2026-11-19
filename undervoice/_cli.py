@@ -118,6 +118,7 @@ def _parser() -> argparse.ArgumentParser:
     p = sub.add_parser("rx", help="listen on a sound card and print frames")
     _add_tuning(p, level=False)
     p.add_argument("--input", type=_device, help="radio audio device (number or name)")
+    p.add_argument("--record", metavar="WAV", help="also save the received audio to this file")
 
     sub.add_parser("devices", help="list sound devices")
     return parser
@@ -173,7 +174,7 @@ def _run(args: argparse.Namespace) -> int:
         else:
             _live.transmit(_message(args), args.level, args.shape, args.input, args.output)
     elif args.command == "rx":
-        _live.receive(args.shape, args.input)
+        _live.receive(args.shape, args.input, args.record)
     elif args.command == "devices":
         _live.devices()
     return 0

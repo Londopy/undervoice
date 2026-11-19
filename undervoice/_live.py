@@ -5,12 +5,15 @@ from __future__ import annotations
 import queue
 import sys
 import time
+import wave
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from types import ModuleType
 
 import numpy as np
 from scipy.signal import resample_poly
 
-from ._audio import Decimator, Interpolator
+from ._audio import Decimator, Interpolator, to_int16
 from ._demodulator import decode
 from ._message import Message
 from ._modulator import Modulator, encode
@@ -20,6 +23,7 @@ CARD_RATE = 6 * RATE
 BLOCK = 960
 BUFFER = FRAME + 5 * RATE
 EVERY = 2 * RATE
+CLIP_WARN_EVERY = 30.0
 
 Device = int | str | None
 
@@ -73,31 +77,52 @@ def play(speech: np.ndarray, message: Message, level_db: float, shape: float, ds
     sd.play(audio.astype(np.float32), CARD_RATE, device=dst, blocking=True)
 
 
-def receive(shape: float, src: Device) -> None:
-    """Print every frame heard on the input, until Ctrl+C."""
+@contextmanager
+def _recorder(path: str | None) -> Iterator[Callable[[np.ndarray], None]]:
+    if path is None:
+        yield lambda block: None
+        return
+    with wave.open(path, "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(RATE)
+        yield lambda block: out.writeframes(to_int16(block).tobytes())
+
+
+def receive(shape: float, src: Device, record: str | None = None) -> None:
+    """Print every frame heard on the input, until Ctrl+C. With record, also save the
+    received audio to a WAV file so a session can be decoded again offline."""
     sd = _sd()
     down = Decimator()
-    blocks: queue.Queue[np.ndarray] = queue.Queue()
+    blocks: queue.Queue[tuple[np.ndarray, float]] = queue.Queue()
 
     problems: queue.Queue[str] = queue.Queue()
 
     def callback(indata, frames, when, status) -> None:
         if status:
             problems.put(str(status))
-        blocks.put(down(indata[:, 0].copy()))
+        blocks.put((down(indata[:, 0].copy()), float(np.max(np.abs(indata)))))
 
     audio = np.zeros(0)
     origin = 0
     pending = 0
     heard: list[float] = []
-    with sd.InputStream(CARD_RATE, BLOCK, src, channels=1, callback=callback) as stream:
-        print("listening, Ctrl+C to stop")
+    warned = -CLIP_WARN_EVERY
+    with (
+        sd.InputStream(CARD_RATE, BLOCK, src, channels=1, callback=callback) as stream,
+        _recorder(record) as save,
+    ):
+        print("listening, Ctrl+C to stop" + (f", recording to {record}" if record else ""))
         while stream.active:
             _report(problems)
             try:
-                block = blocks.get(timeout=1.0)
+                block, peak = blocks.get(timeout=1.0)
             except queue.Empty:
                 continue
+            save(block)
+            if peak > 0.98 and time.monotonic() - warned > CLIP_WARN_EVERY:
+                warned = time.monotonic()
+                print("input is clipping: turn the sound card input level down", file=sys.stderr)
             audio = np.concatenate([audio, block])
             pending += len(block)
             if len(audio) > BUFFER:

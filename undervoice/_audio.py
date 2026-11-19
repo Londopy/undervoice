@@ -30,9 +30,13 @@ def read_wav(path: str | Path) -> np.ndarray:
     return x
 
 
+def to_int16(x: np.ndarray) -> np.ndarray:
+    return (np.clip(x, -1.0, 1.0) * 32767).astype(np.int16)
+
+
 def write_wav(path: str | Path, x: np.ndarray) -> None:
     """Write 16-bit mono audio at RATE."""
-    wavfile.write(path, RATE, (np.clip(x, -1.0, 1.0) * 32767).astype(np.int16))
+    wavfile.write(path, RATE, to_int16(x))
 
 
 def resample_at(x: np.ndarray, t: np.ndarray) -> np.ndarray:
