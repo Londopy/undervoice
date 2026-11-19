@@ -20,7 +20,7 @@ from ._audio import Decimator, Interpolator, to_int16
 from ._demodulator import Frame, decode
 from ._message import Message
 from ._modulator import Modulator, encode
-from ._ptt import Ptt, SetupError, describe, find
+from ._ptt import Keyer, SetupError, choices
 from ._waveform import FRAME, RATE
 
 CARD_RATE = 6 * RATE
@@ -65,16 +65,9 @@ def cards() -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
 
 def devices() -> None:
     print(_sd().query_devices())
-    try:
-        found = find()
-    except SetupError as e:
-        print(f"\nPTT interfaces: unknown ({e})")
-        return
-    print("\nPTT interfaces (for --ptt N):")
-    for i, d in enumerate(found):
-        print(f"  {i}: {describe(d)}")
-    if not found:
-        print("  none found")
+    print("\nWays to key the radio (for --ptt):")
+    for label, how in choices():
+        print(f"  {how:<22} {label}")
 
 
 def _open(opener: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -128,7 +121,7 @@ class Transmitter:
         shape: float,
         src: Device,
         dst: Device,
-        ptt: Ptt | None = None,
+        ptt: Keyer | None = None,
         txdelay: float = 0.3,
     ):
         self.message = message
@@ -186,7 +179,7 @@ def transmit(
     shape: float,
     src: Device,
     dst: Device,
-    ptt: Ptt | None = None,
+    ptt: Keyer | None = None,
     txdelay: float = 0.3,
 ) -> None:
     """Mic in, speech with data out, until Ctrl+C. With ptt, Enter keys and unkeys the radio."""
@@ -224,7 +217,7 @@ def play(
     level_db: float,
     shape: float,
     dst: Device,
-    ptt: Ptt | None = None,
+    ptt: Keyer | None = None,
     txdelay: float = 0.3,
 ) -> None:
     """Play a recording with data mixed in, keying the radio around it when ptt is given."""

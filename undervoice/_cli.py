@@ -15,7 +15,7 @@ from ._channel import fm_channel
 from ._demodulator import decode
 from ._message import Message
 from ._modulator import LEVEL_DB, SHAPE, encode
-from ._ptt import Ptt, SetupError
+from ._ptt import Keyer, SetupError, open_keyer
 from ._sweep import sweep
 from ._waveform import RATE
 
@@ -37,10 +37,10 @@ def level_list(value: str) -> list[float]:
     return [float(v) for v in value.split(",")]
 
 
-def _keyer(args: argparse.Namespace) -> AbstractContextManager[Ptt | None]:
+def _keyer(args: argparse.Namespace) -> AbstractContextManager[Keyer | None]:
     if args.ptt is None:
         return nullcontext(None)
-    return Ptt(None if args.ptt == "auto" else args.ptt, args.ptt_gpio)
+    return open_keyer(args.ptt, args.ptt_gpio)
 
 
 def _message(args: argparse.Namespace) -> Message:
@@ -125,14 +125,14 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--ptt",
         nargs="?",
-        const="auto",
-        type=int,
-        metavar="N",
-        help="key the radio through a CM108-type USB interface; N picks one when "
-        "`undervoice devices` lists several",
+        const="cm108",
+        metavar="HOW",
+        help="key the radio: cm108[:N] for a USB interface's GPIO (the default), COM5 or "
+        "/dev/ttyUSB0 with optional :dtr for a serial line, rigctld[:host[:port]] for CAT "
+        "through Hamlib; leave out for VOX or keying by hand. `undervoice devices` lists them",
     )
     p.add_argument(
-        "--ptt-gpio", type=int, default=3, help="interface GPIO pin wired to PTT (default 3)"
+        "--ptt-gpio", type=int, default=3, help="CM108 GPIO pin wired to PTT (default 3)"
     )
     p.add_argument(
         "--txdelay",

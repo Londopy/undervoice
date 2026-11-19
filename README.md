@@ -83,21 +83,33 @@ light or dark setting.
 
 ### Keying the radio
 
-Most USB radio interfaces (DMK URI, RIM-Lite, the AIOC cable and other CM108-based ones) key
-PTT through a GPIO pin on their sound chip. `--ptt` drives that pin:
+`--ptt` (or the PTT box in the window) keys the radio four ways, which between them cover the
+common interfaces. `undervoice devices` lists what this machine offers.
+
+| `--ptt` | Keys through | For |
+|---|---|---|
+| `cm108`, `cm108:N` | a GPIO pin on the interface's USB sound chip | DMK URI, RIM-Lite, AIOC and other CM108/CM119 interfaces |
+| `COM5`, `COM5:dtr`, `/dev/ttyUSB0` | a serial port's RTS line, or DTR | Digirig and most interfaces with a COM port |
+| `rigctld`, `rigctld:host:port` | a CAT command through a running Hamlib `rigctld` | any rig Hamlib supports, over its CAT cable |
+| left out | nothing: the interface or you key the radio | SignaLink and other VOX interfaces, or keying by hand |
 
 ```powershell
 undervoice tx --play speech.wav --call W1AW --output "USB Audio" --ptt
-undervoice tx --call W1AW --input "Headset" --output "USB Audio" --ptt
+undervoice tx --call W1AW --input "Headset" --output "USB Audio" --ptt COM5
 ```
 
 With `--play` the radio is keyed for the whole recording. With the mic, press Enter to key and
 Enter again to unkey; each transmission starts a fresh frame, so none is cut off by unkeying
 mid-frame unless the transmission itself is shorter than 9.3 s. `--txdelay` (default 0.3 s) is
-how long the radio gets to come up to power before audio starts. Most interfaces wire PTT to
-GPIO 3; use `--ptt-gpio` if yours differs. When several interfaces are attached,
-`undervoice devices` numbers them and `--ptt N` picks one. On Linux the user needs write access
-to the interface's `/dev/hidraw*` device, usually through a udev rule.
+how long the radio gets to come up to power before audio starts. CM108 interfaces usually wire
+PTT to GPIO 3; use `--ptt-gpio` if yours differs. The serial port's lines are held low while it
+opens, so opening it does not key the radio. On Linux the user needs write access to the
+interface's `/dev/hidraw*` or serial device, usually through a udev rule or the `dialout`
+group.
+
+VOX interfaces key on audio, so they key whenever the microphone carries sound and can drop
+out during long pauses (turn up the SignaLink's DELAY knob), and they clip the first moment
+of each transmission while they switch.
 
 When the radio is fed through its data port (the 6-pin mini-DIN on most mobiles), it ignores
 its own front-panel mic while transmitting, so speak into a mic on the PC. On radios with a

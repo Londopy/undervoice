@@ -6,8 +6,8 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 
 ### Added
 
-- `tx --ptt` keys the radio through a CM108-type USB interface (DMK URI, AIOC and similar), with `--ptt-gpio` and `--txdelay`. In mic mode Enter keys and unkeys, and each transmission starts a fresh frame.
-- `undervoice devices` lists the interfaces that can key PTT.
+- `tx --ptt` keys the radio through a CM108-type USB interface's GPIO (DMK URI, AIOC), a serial port's RTS or DTR line (Digirig), or a CAT command through Hamlib's rigctld, with `--txdelay` for the radio to come up to power. In mic mode Enter keys and unkeys, and each transmission starts a fresh frame.
+- `undervoice devices` lists every way this machine can key the radio.
 - A window (`undervoice gui`, or `undervoice-gui` with no console on Windows) with station details, sound card and PTT pickers, transmit and send-a-recording buttons, an input level meter and a table of frames heard.
 
 ## [0.1.0] - 2026-11-19
