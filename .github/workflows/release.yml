@@ -1,112 +1,325 @@
 name: Release
 
+# A tag push is the whole release ritual: `git tag v0.2.0 && git push --tags` builds the Windows
+# downloads and the Python packages, publishes the GitHub release, then uploads to PyPI. The tag,
+# CHANGELOG.md and pyproject.toml must agree, and a tag with a "-" (v0.2.0-rc1) becomes a
+# pre-release.
+#
+# Run workflow (Actions tab) is a dry run unless dry_run is unticked: it builds the branch it was
+# started on, or the tag input when one is given, names everything after the version in
+# pyproject.toml, and keeps the whole release as the release-dry-run artifact instead of
+# publishing it. Untick dry_run and give a tag to rebuild a release that already exists:
+#   gh workflow run release.yml -f dry_run=true
+#   gh workflow run release.yml -f dry_run=false -f tag=v0.2.0
+#
+# Downloads, all listed in SHA256SUMS.txt. The in-app updater and install.ps1 look for exactly
+# these names; change them together.
+#   undervoice-<ver>-setup-x64.exe: Inno Setup installer, per-user, no UAC
+#   undervoice-<ver>-x64.msi: MSI, per-user by default, all-users for IT
+#   undervoice-v<ver>-x64-portable.exe: the whole app in one exe
+#   undervoice-v<ver>-portable.zip: undervoice/x64/undervoice.exe plus a portable marker
+#   install.ps1, install.cmd: script installs (irm ... | iex)
+#   the wheel and sdist, which also go to PyPI
+# plus a .torrent and a magnet QR code (.magnet.png) per download, made by
+# scripts/release_notes.py, which also writes SHA256SUMS.txt and the release page.
+
 on:
   push:
     tags: ["v*"]
-  # rebuilds the release for a tag that already exists, e.g. after fixing a broken run
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing tag to release, e.g. v0.1.0
-        required: true
+        description: Tag to build, e.g. v0.2.0; needed only when dry_run is unticked
+        required: false
+        type: string
+      dry_run:
+        description: Build everything but publish nothing
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
+  # Gate everything on the changelog first: no point building installers for a release whose
+  # notes are broken.
   validate:
+    name: Validate changelog and version
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      tag: ${{ steps.tag.outputs.tag }}
-      version: ${{ steps.tag.outputs.version }}
+      ref: ${{ steps.ref.outputs.ref }}
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
     steps:
-      # the tag goes through an env var so a crafted tag name cannot inject shell
-      - id: tag
+      # inputs go through env vars so a crafted tag name cannot inject shell
+      - name: Resolve what to build
+        id: ref
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "ref=${TAG:-$GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            echo "ref=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$TAG" ]]; then
+            echo "ref=$TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::A release needs the tag input; leave dry_run ticked to only test the build"
+            exit 1
+          fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
-          ref: ${{ steps.tag.outputs.tag }}
+          ref: ${{ steps.ref.outputs.ref }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
-      # gate everything on the notes: the tag, CHANGELOG.md and pyproject.toml must agree
+      - name: Version
+        id: version
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [[ "$DRY_RUN" == "true" ]]; then
+            # nothing gets tagged on a dry run, so the downloads are named after pyproject.toml
+            version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+            echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          else
+            version="${REF#v}"
+            echo "tag=$REF" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Fails unless CHANGELOG.md is valid Keep a Changelog and, on a release, its newest section
+      # matches the tag; an empty check-version skips that part, since a dry run has no tag.
+      # Pinned: the floating v2 tag once resolved to a release that silently ignored newer inputs.
       - uses: Londopy/patchnotes@v2.6.0
         with:
           file: CHANGELOG.md
           strict: "true"
-          check-version: ${{ steps.tag.outputs.version }}
+          check-version: ${{ !inputs.dry_run && steps.version.outputs.version || '' }}
 
-      - run: |
+      - name: pyproject.toml agrees too
+        if: ${{ !inputs.dry_run }}
+        run: |
           pip install patchnotes==2.6.0
           patchnotes CHANGELOG.md check-version --against pyproject.toml
 
-  build:
+  python:
+    name: Wheel and sdist
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.validate.outputs.tag }}
+          ref: ${{ needs.validate.outputs.ref }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       - run: |
           pip install build
           python -m build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: dist
+          name: python
           path: dist/
+          retention-days: 1
 
-  github-release:
-    needs: [validate, build]
+  # x64 only: numpy, scipy and sounddevice's PortAudio DLL make x86 and arm64 builds impractical,
+  # and Windows 11 on ARM runs the x64 build under emulation.
+  windows:
+    name: Windows downloads
+    needs: validate
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    defaults:
+      run:
+        # pwsh for every step: Git Bash would turn /DAppVersion=... into a path
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.ref }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      # the live extra (sounddevice with its PortAudio DLL, hidapi, pyserial) is how the window
+      # reaches the sound card and keys the radio, so it has to be in the exe
+      - name: Install undervoice and PyInstaller
+        run: pip install ".[live]" pyinstaller==6.22.3
+
+      # The same entry script twice, with flags instead of a committed .spec. The onedir build
+      # (exe plus _internal) is what the setup.exe and the MSI install: it starts in a couple of
+      # seconds, where the onefile build unpacks itself to %TEMP% on every start. The onefile
+      # build is the portable exe. --copy-metadata keeps undervoice's dist-info, which the app
+      # reads its own version from.
+      - name: PyInstaller
+        run: |
+          $common = @(
+            "--noconfirm", "--windowed", "--name", "undervoice",
+            "--icon", "installer\undervoice.ico", "--copy-metadata", "undervoice"
+          )
+          pyinstaller @common --onedir --distpath build\onedir --workpath build\work-onedir installer\launch.py
+          if ($LASTEXITCODE -ne 0) { throw "the onedir build failed" }
+          pyinstaller @common --onefile --distpath build\onefile --workpath build\work-onefile installer\launch.py
+          if ($LASTEXITCODE -ne 0) { throw "the onefile build failed" }
+          New-Item -ItemType Directory -Force -Path stage | Out-Null
+          Copy-Item build\onefile\undervoice.exe "stage\undervoice-v$env:VERSION-x64-portable.exe"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build the setup.exe
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" installer\undervoice.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          Copy-Item installer\output\*.exe stage\
+
+      # WiX v7. The maintenance fee only applies above US$10k/yr revenue, but the EULA must be
+      # accepted for the binaries to run, and it comes first: WiX 7 refuses every other command
+      # (WIX7015) until it's accepted. pwsh only fails a step on the last command's exit code, so
+      # each one is checked.
+      - name: Install WiX
+        run: |
+          dotnet tool install --global wix --version 7.0.0
+          if ($LASTEXITCODE -ne 0) { throw "installing wix failed" }
+          wix eula accept wix7
+          if ($LASTEXITCODE -ne 0) { throw "accepting the WiX EULA failed" }
+          wix extension add --global WixToolset.UI.wixext/7.0.0 WixToolset.Util.wixext/7.0.0
+          if ($LASTEXITCODE -ne 0) { throw "adding the WiX extensions failed" }
+
+      - name: Build the MSI
+        run: |
+          # MSI versions are plain numbers: strip -rc1 etc.
+          $num = ($env:VERSION -split "-")[0]
+          # WixUI shows the license from an RTF file; make it from LICENSE
+          $text = Get-Content LICENSE -Raw
+          $sb = [System.Text.StringBuilder]::new()
+          foreach ($ch in $text.ToCharArray()) {
+            $c = [int]$ch
+            if ($ch -eq [char]'\' -or $ch -eq [char]'{' -or $ch -eq [char]'}') { [void]$sb.Append('\' + $ch) }
+            elseif ($ch -eq "`n") { [void]$sb.Append("\par`n") }
+            elseif ($ch -eq "`r") { }
+            elseif ($c -gt 127) { if ($c -gt 32767) { $c -= 65536 }; [void]$sb.Append("\u${c}?") }
+            else { [void]$sb.Append($ch) }
+          }
+          "{\rtf1\ansi\deff0{\fonttbl{\f0 Segoe UI;}}\fs18 " + $sb.ToString() + "}" | Set-Content installer\license.rtf -Encoding ascii
+          # run from installer\ so relative paths in the .wxs match the .iss
+          Push-Location installer
+          wix build -arch x64 -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext `
+            -d Version=$num -o "..\stage\undervoice-$env:VERSION-x64.msi" undervoice.wxs
+          if ($LASTEXITCODE -ne 0) { throw "wix build failed" }
+          Pop-Location
+          Remove-Item stage\*.wixpdb -ErrorAction SilentlyContinue
+
+      - name: Portable zip and install scripts
+        run: |
+          # stable inner folder name (no version) so a Scoop manifest's extract_dir never changes
+          New-Item -ItemType Directory -Force -Path build\zip\undervoice\x64 | Out-Null
+          Copy-Item build\onefile\undervoice.exe build\zip\undervoice\x64\
+          # empty marker: the app keeps its settings next to the exe instead of in %APPDATA%
+          New-Item -ItemType File -Force -Path build\zip\undervoice\x64\portable | Out-Null
+          Compress-Archive -Path build\zip\undervoice -DestinationPath "stage\undervoice-v$env:VERSION-portable.zip"
+          Copy-Item installer\install.ps1, installer\install.cmd stage\
+          Get-ChildItem stage | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: stage/
+          retention-days: 1
+
+  release:
+    name: Release
+    needs: [validate, python, windows]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    # creates the release and uploads its assets
     permissions:
       contents: write
+    env:
+      TAG: ${{ needs.validate.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.validate.outputs.tag }}
+          ref: ${{ needs.validate.outputs.ref }}
           # the previous tag is needed for the compare link
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      # the wheel and sdist and the Windows downloads, side by side in dist/
+      - uses: actions/download-artifact@v8
         with:
-          name: dist
-          path: dist/
+          path: dist
+          merge-multiple: true
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
-      - env:
-          TAG: ${{ needs.validate.outputs.tag }}
-          VERSION: ${{ needs.validate.outputs.version }}
+      # torrents and magnet QR codes for every download, SHA256SUMS.txt over everything, and the
+      # release page with the CHANGELOG.md section copied verbatim. HEAD is the tagged commit
+      # (or, on a dry run, the one being built), so HEAD^ finds the previous tag.
+      - name: Release notes, checksums and torrents
+        run: |
+          pip install segno==1.6.6
+          prev="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
+          python scripts/release_notes.py "$TAG" dist --prev "$prev" --out body.md
+          echo "TITLE=$(cat title.txt)" >> "$GITHUB_ENV"
+          cat dist/SHA256SUMS.txt
+
+      # a dry run ends here: the whole release as one artifact to look through
+      - name: Upload the dry run
+        if: ${{ inputs.dry_run }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-dry-run
+          path: |
+            dist/
+            body.md
+            title.txt
+
+      # Draft first, publish after every asset is uploaded, so the in-app updater never sees a
+      # half-uploaded release.
+      - name: Draft the release
+        if: ${{ !inputs.dry_run }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TITLE }}
+          body_path: body.md
+          files: dist/*
+          draft: true
+          prerelease: ${{ contains(env.TAG, '-') }}
+
+      - name: Publish the draft
+        if: ${{ !inputs.dry_run }}
+        env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          prev="$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)"
-          python scripts/release_notes.py "$VERSION" dist "$prev"
-          flags=()
-          # a tag with a dash (v0.2.0-rc1) is a prerelease
-          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
-          gh release create "$TAG" dist/* --verify-tag --title "undervoice $VERSION" \
-            --notes-file body.md "${flags[@]}"
+          if [[ "$TAG" == *-* ]]; then
+            gh release edit "$TAG" --draft=false
+          else
+            gh release edit "$TAG" --draft=false --latest
+          fi
 
+  # After the GitHub release, so PyPI never gets a version whose Windows downloads failed to build.
   pypi:
-    needs: [validate, build]
+    name: PyPI
+    needs: release
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # trusted publishing: PyPI must list this repo, release.yml and the pypi environment
@@ -114,9 +327,10 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      # only the wheel and sdist; the Windows downloads are not Python packages
+      - uses: actions/download-artifact@v8
         with:
-          name: dist
+          name: python
           path: dist/
 
       - uses: pypa/gh-action-pypi-publish@release/v1

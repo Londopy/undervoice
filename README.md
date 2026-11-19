@@ -2,8 +2,12 @@
 
 [![CI](https://github.com/Londopy/undervoice/actions/workflows/ci.yml/badge.svg)](https://github.com/Londopy/undervoice/actions/workflows/ci.yml)
 [![changelog](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Londopy/undervoice/gh-pages/changelog-badge.json)](CHANGELOG.md)
+[![Release](https://img.shields.io/github/v/release/Londopy/undervoice)](https://github.com/Londopy/undervoice/releases/latest)
+[![PyPI](https://img.shields.io/pypi/v/undervoice)](https://pypi.org/project/undervoice/)
+[![Python](https://img.shields.io/pypi/pyversions/undervoice)](https://pypi.org/project/undervoice/)
+[![Downloads](https://img.shields.io/github/downloads/Londopy/undervoice/total)](https://github.com/Londopy/undervoice/releases)
 [![License](https://img.shields.io/github/license/Londopy/undervoice)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-3776AB)](pyproject.toml)
+[![Windows](https://img.shields.io/badge/platform-Windows%2010%2B-0078D6)](#install)
 
 **Send your callsign, grid square and a short status during an ordinary FM voice QSO, without
 anyone stopping to send them.**
@@ -19,14 +23,50 @@ loopback. It has not been on the air yet, and nobody has done the blind listenin
 
 ## Install
 
-From a clone, with Python 3.10 or newer:
+**Windows:** every [release](https://github.com/Londopy/undervoice/releases/latest) has the same
+downloads; pick whichever you like.
+
+| Download | What it is |
+|---|---|
+| `undervoice-<version>-setup-x64.exe` | **Installer (recommended).** Per-user, no admin prompt. |
+| `undervoice-<version>-x64.msi` | MSI installer. Per-user by default; IT can deploy it machine-wide. |
+| `undervoice-v<version>-x64-portable.exe` | One exe, nothing to install. It unpacks itself on every start, so it opens in about ten seconds where the installed app takes two. |
+| `undervoice-v<version>-portable.zip` | The portable exe in a folder; settings stay next to it. |
+| `install.ps1` / `install.cmd` | Script install that picks a download and checks its SHA-256. |
+| `*.torrent` / magnet links | Each download over BitTorrent, seeded from GitHub so it works with no peers. |
+
+The Windows downloads are the window (`undervoice gui`) built for 64-bit Windows 10 and 11;
+Windows on ARM runs them under emulation. For the command line, install with pip below.
+
+**PowerShell one-liner:**
 
 ```powershell
-pip install -e .[live]
+irm https://github.com/Londopy/undervoice/releases/latest/download/install.ps1 | iex
 ```
 
-`live` adds [sounddevice](https://pypi.org/project/sounddevice/) for sound card use. Leave it off
-if you only want to work with WAV files.
+Options: `-Msi`, `-Portable`, `-AllUsers`, `-Version 0.2.0`, `-NoShortcut`, `-DryRun`. To pass
+them, run the script as a block:
+`& ([scriptblock]::Create((irm https://github.com/Londopy/undervoice/releases/latest/download/install.ps1))) -Portable`
+
+**MSI for every user** (admin): `msiexec /i undervoice-<version>-x64.msi ALLUSERS=2 MSIINSTALLPERUSER=""`.
+Add `DESKTOPSHORTCUT=0` to skip the desktop icon.
+
+The downloads are not code-signed, so Windows SmartScreen may warn on first run (**More info**,
+then **Run anyway**). Every release ships `SHA256SUMS.txt`; check a download with:
+
+```powershell
+(Get-FileHash .\<file> -Algorithm SHA256).Hash
+```
+
+**Any platform, with Python 3.11 or newer:**
+
+```bash
+pip install undervoice[live]
+```
+
+That gives the `undervoice` command and `undervoice-gui`, which opens the window without a
+console. `live` adds sound card and PTT support (sounddevice, hidapi, pyserial); leave it off
+if you only work with WAV files.
 
 ## Usage
 
@@ -115,6 +155,42 @@ When the radio is fed through its data port (the 6-pin mini-DIN on most mobiles)
 its own front-panel mic while transmitting, so speak into a mic on the PC. On radios with a
 1200/9600 data speed setting, use 1200: its receive audio is filtered and de-emphasized like
 the speaker audio undervoice expects.
+
+### Settings and updates
+
+The window remembers your station, sound cards, PTT and levels between runs, in `config.toml`:
+
+| | Path |
+|---|---|
+| Windows | `%APPDATA%\undervoice\config.toml` |
+| Portable copy | `config.toml` next to the exe (a file named `portable` beside it switches this on) |
+| macOS | `~/Library/Application Support/undervoice/config.toml` |
+| Linux | `~/.config/undervoice/config.toml` |
+
+```toml
+[station]
+call = "W1AW"
+grid = "FN31pr"
+status = "MOBILE QRV"
+
+[radio]
+ptt = "COM5"            # the same values --ptt takes, or "" for VOX or keying by hand
+level = "-18"
+shape = "0.5"
+txdelay = "0.3"
+
+[updater]
+enabled = true
+channel = "stable"      # "stable" or "beta" (includes pre-releases)
+check_interval_h = 24
+```
+
+The Updates row checks GitHub Releases on that schedule and on **Check now**. When there is a
+newer version it offers **Download and install**; nothing installs until you click it. The
+download is checked against the release's `SHA256SUMS.txt` first and refused on a mismatch.
+An installed copy updates through the same installer it came from; a portable exe replaces
+itself. A copy installed with pip says so and leaves the update to
+`pip install -U undervoice[live]`.
 
 ## Results so far
 
@@ -280,7 +356,8 @@ care as any other text under 97.113 (no business, no obscenity).
   not been done.
 - Without `--ptt`, `tx` starts frames when it starts and runs them back to back, so a frame cut
   off by unkeying is lost. With `--ptt` each transmission starts a fresh frame.
-- `--ptt` has been tested against the CM108 protocol, not yet against a real interface.
+- PTT keying (CM108, serial, rigctld), the Windows installers and the updater are tested in
+  CI and against fakes of the hardware, not yet against a real interface or radio.
 
 ## Building from source
 
@@ -289,7 +366,14 @@ git clone https://github.com/Londopy/undervoice
 cd undervoice
 pip install -e .[live,dev]
 pytest
+ruff check .
+mypy undervoice
 ```
+
+The Windows downloads are built by `.github/workflows/release.yml` with PyInstaller,
+[Inno Setup 6](https://jrsoftware.org/isinfo.php) and [WiX v7](https://wixtoolset.org). Run it
+with `dry_run` from the Actions tab (`gh workflow run release.yml -f dry_run=true`) to build
+everything without publishing.
 
 ## Contributing
 

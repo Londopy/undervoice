@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  undervoice - MSI installer (WiX Toolset v7)
+
+  Built by the release workflow from inside installer\, after PyInstaller has
+  written the onedir build to ..\build\onedir\undervoice:
+    wix build -arch x64 -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext
+              -d Version=1.2.3 -o undervoice-1.2.3-x64.msi undervoice.wxs
+  The workflow also writes installer\license.rtf from LICENSE first
+  (WixUI shows the license from an RTF file).
+
+  WiX setup on a dev machine is the same as in release.yml: the wix dotnet tool,
+  its EULA, then the UI and Util extensions. XML comments can't contain two
+  hyphens in a row, so the commands live there.
+
+  Install scope: per-user by default (no UAC, %LOCALAPPDATA%\Programs\undervoice,
+  same folder as the Inno setup.exe). IT admins install machine-wide with:
+    msiexec /i undervoice-<ver>-x64.msi ALLUSERS=2 MSIINSTALLPERUSER=""
+  Optional msiexec property: DESKTOPSHORTCUT=0 (skip the desktop icon).
+
+  Don't install the MSI and the setup.exe side by side; they share a folder.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <!-- the workflow passes -d Version=<numeric version>; MSI versions must be
+       plain numbers, so prerelease suffixes like -rc1 are stripped first -->
+  <?ifndef Version ?>
+    <?define Version = "0.0.0" ?>
+  <?endif?>
+  <!-- the PyInstaller onedir build: undervoice.exe plus its _internal folder -->
+  <?ifndef BinDir ?>
+    <?define BinDir = "..\build\onedir\undervoice" ?>
+  <?endif?>
+
+  <!-- Id replaces the old UpgradeCode GUID: any newer MSI with the same Id
+       upgrades an older one in place. Never reuse this Id for a different app. -->
+  <Package Id="Londopy.undervoice"
+           Name="undervoice"
+           Manufacturer="Londopy"
+           Version="$(var.Version)"
+           Language="1033"
+           Scope="perUserOrMachine">
+
+    <!-- same-version reinstall works (handy for testing); downgrades are refused -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of undervoice is already installed." />
+
+    <!-- one msi file, no loose .cab next to it -->
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- Add/Remove Programs: icon and links -->
+    <Icon Id="AppIcon" SourceFile="undervoice.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/Londopy/undervoice" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/Londopy/undervoice/issues" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/Londopy/undervoice/releases" />
+
+    <!-- option for msiexec; same default as the Inno task (desktop icon on).
+         Secure so it survives into the elevated part of an all-users install. -->
+    <Property Id="DESKTOPSHORTCUT" Value="1" Secure="yes" />
+
+    <!-- UI: license page + Install button, then a "Launch" checkbox (checked) -->
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch undervoice" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[#MainExe]" />
+    <UI>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction"
+               Value="Wix4ShellExec_$(sys.BUILDARCHSHORT)"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
+
+    <!-- close a running copy before its files are replaced or removed,
+         like TerminateApp() in the Inno script -->
+    <util:CloseApplication Id="CloseRunningApp" Target="undervoice.exe"
+                           CloseMessage="yes" TerminateProcess="1" Timeout="3"
+                           RebootPrompt="no" />
+
+    <Feature Id="Main" Title="undervoice" Level="1">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="InstallSourceMarker" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+      <ComponentRef Id="CleanupConfig" />
+      <!-- the rest of the onedir build (_internal: Python, numpy, scipy, Tk),
+           harvested at build time into one component per file. The exe is
+           left out because MainExecutable installs it under a fixed Id that
+           the shortcuts and the launch checkbox point at. -->
+      <Files Include="$(var.BinDir)\**" Directory="INSTALLFOLDER">
+        <Exclude Files="$(var.BinDir)\undervoice.exe" />
+      </Files>
+    </Feature>
+
+    <!-- per-user: %LOCALAPPDATA%\Programs\undervoice
+         all users: C:\Program Files\undervoice -->
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="undervoice">
+
+        <Component Id="MainExecutable">
+          <File Id="MainExe" Source="$(var.BinDir)\undervoice.exe" KeyPath="yes" />
+        </Component>
+
+        <!-- install.ini tells the in-app updater an MSI installed this copy, so an
+             all-users install updates through a new MSI instead of self-replace.
+             Created on install, removed on uninstall. -->
+        <Component Id="InstallSourceMarker">
+          <IniFile Id="InstallSource" Name="install.ini" Directory="INSTALLFOLDER"
+                   Section="install" Key="source" Value="msi" Action="addLine" />
+          <RegistryValue Root="HKMU" Key="Software\Londopy\undervoice"
+                         Name="InstallSource" Type="string" Value="msi" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- shortcuts sit directly in Start, no subfolder. HKMU = HKCU for a
+         per-user install, HKLM for all users; the value is just the keypath. -->
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="StartMenuShortcut" Name="undervoice" Target="[#MainExe]"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Description="Slow data channel hidden under FM voice for amateur radio" />
+        <RegistryValue Root="HKMU" Key="Software\Londopy\undervoice"
+                       Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcut" Condition="DESKTOPSHORTCUT = 1">
+        <Shortcut Id="DesktopShortcut" Name="undervoice" Target="[#MainExe]"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Description="Slow data channel hidden under FM voice for amateur radio" />
+        <RegistryValue Root="HKMU" Key="Software\Londopy\undervoice"
+                       Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <!-- uninstall removes %APPDATA%\undervoice (config.toml), matching the Inno
+         [UninstallDelete] entry -->
+    <StandardDirectory Id="AppDataFolder">
+      <Directory Id="CONFIGFOLDER" Name="undervoice">
+        <Component Id="CleanupConfig">
+          <RemoveFile Id="RemoveConfigFiles" Name="*" On="uninstall" />
+          <RemoveFolder Id="RemoveConfigFolder" On="uninstall" />
+          <RegistryValue Root="HKMU" Key="Software\Londopy\undervoice"
+                         Name="CleanupConfig" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+  </Package>
+</Wix>

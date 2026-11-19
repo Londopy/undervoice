@@ -12,6 +12,11 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 dist/
+build/
+*.spec
+
+installer/license.rtf
+installer/output/
 
 .env
 *.key
