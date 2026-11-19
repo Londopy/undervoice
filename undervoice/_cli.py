@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import glob
 import sys
+from contextlib import AbstractContextManager, nullcontext
 
 import numpy as np
 
@@ -14,6 +15,7 @@ from ._channel import fm_channel
 from ._demodulator import decode
 from ._message import Message
 from ._modulator import LEVEL_DB, SHAPE, encode
+from ._ptt import Ptt
 from ._sweep import sweep
 from ._waveform import RATE
 
@@ -33,6 +35,15 @@ def shape_value(value: str) -> float:
 
 def level_list(value: str) -> list[float]:
     return [float(v) for v in value.split(",")]
+
+
+def _keyer(args: argparse.Namespace) -> AbstractContextManager[Ptt | None]:
+    if args.ptt is None:
+        return nullcontext(None)
+    try:
+        return Ptt(None if args.ptt == "auto" else args.ptt, args.ptt_gpio)
+    except ImportError as e:
+        sys.exit(str(e))
 
 
 def _message(args: argparse.Namespace) -> Message:
@@ -114,6 +125,24 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--play", metavar="WAV", help="play this recording instead of using the mic")
     p.add_argument("--input", type=_device, help="mic device (number or name)")
     p.add_argument("--output", type=_device, help="radio audio device (number or name)")
+    p.add_argument(
+        "--ptt",
+        nargs="?",
+        const="auto",
+        type=int,
+        metavar="N",
+        help="key the radio through a CM108-type USB interface; N picks one when "
+        "`undervoice devices` lists several",
+    )
+    p.add_argument(
+        "--ptt-gpio", type=int, default=3, help="interface GPIO pin wired to PTT (default 3)"
+    )
+    p.add_argument(
+        "--txdelay",
+        type=float,
+        default=0.3,
+        help="seconds between keying and sending audio (default 0.3)",
+    )
 
     p = sub.add_parser("rx", help="listen on a sound card and print frames")
     _add_tuning(p, level=False)
@@ -169,10 +198,15 @@ def _run(args: argparse.Namespace) -> int:
                 flush=True,
             )
     elif args.command == "tx":
-        if args.play:
-            _live.play(read_wav(args.play), _message(args), args.level, args.shape, args.output)
-        else:
-            _live.transmit(_message(args), args.level, args.shape, args.input, args.output)
+        message = _message(args)
+        with _keyer(args) as ptt:
+            if args.play:
+                speech = read_wav(args.play)
+                _live.play(speech, message, args.level, args.shape, args.output, ptt, args.txdelay)
+            else:
+                _live.transmit(
+                    message, args.level, args.shape, args.input, args.output, ptt, args.txdelay
+                )
     elif args.command == "rx":
         _live.receive(args.shape, args.input, args.record)
     elif args.command == "devices":

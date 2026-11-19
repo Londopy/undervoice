@@ -27,7 +27,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-live = ["sounddevice>=0.5.6"]
+live = ["sounddevice>=0.5.6", "hidapi>=0.15"]
 dev = ["pytest>=9.0", "ruff>=0.16"]
 all = ["undervoice[live]"]
 

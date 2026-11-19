@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import sys
+import threading
 import time
 import wave
 from collections.abc import Callable, Iterator
@@ -17,6 +18,7 @@ from ._audio import Decimator, Interpolator, to_int16
 from ._demodulator import decode
 from ._message import Message
 from ._modulator import Modulator, encode
+from ._ptt import Ptt, describe, find
 from ._waveform import FRAME, RATE
 
 CARD_RATE = 6 * RATE
@@ -41,26 +43,98 @@ def _sd() -> ModuleType:
 
 def devices() -> None:
     print(_sd().query_devices())
+    try:
+        found = find()
+    except ImportError as e:
+        print(f"\nPTT interfaces: unknown ({e})")
+        return
+    print("\nPTT interfaces (for --ptt N):")
+    for i, d in enumerate(found):
+        print(f"  {i}: {describe(d)}")
+    if not found:
+        print("  none found")
 
 
-def transmit(message: Message, level_db: float, shape: float, src: Device, dst: Device) -> None:
-    """Mic in, speech with data out, until Ctrl+C."""
-    sd = _sd()
-    mod = Modulator(message, level_db, shape)
-    down, up = Decimator(), Interpolator()
+class _Sender:
+    """Mixes data into the mic audio while keyed and sends silence while not."""
 
-    problems: queue.Queue[str] = queue.Queue()
+    def __init__(self, message: Message, level_db: float, shape: float, delay: float):
+        self.args = (message, level_db, shape)
+        self.mod = Modulator(*self.args)
+        self.down, self.up = Decimator(), Interpolator()
+        self.delay = delay
+        self.keyed = False
+        self.hold = 0
+        self.problems: queue.Queue[str] = queue.Queue()
 
-    def callback(indata, outdata, frames, when, status) -> None:
+    def callback(self, indata, outdata, frames, when, status) -> None:
         if status:
-            problems.put(str(status))
-        outdata[:, 0] = up(mod.process(down(indata[:, 0])))
+            self.problems.put(str(status))
+        speech = self.down(indata[:, 0])
+        if self.keyed and self.hold <= 0:
+            outdata[:, 0] = self.up(self.mod.process(speech))
+        else:
+            self.hold -= len(speech)
+            outdata[:, 0] = self.up(np.zeros(len(speech)))
 
-    with sd.Stream(CARD_RATE, BLOCK, (src, dst), channels=1, callback=callback) as stream:
-        print(f"sending {message} under the mic audio, Ctrl+C to stop")
+    def key(self) -> None:
+        # a fresh modulator starts a frame with each transmission, after the radio's TX delay
+        self.mod = Modulator(*self.args)
+        self.hold = int(self.delay * RATE)
+        self.keyed = True
+
+    def unkey(self) -> None:
+        self.keyed = False
+
+
+def _enter_presses() -> queue.Queue[str]:
+    presses: queue.Queue[str] = queue.Queue()
+
+    def read() -> None:
+        for line in sys.stdin:
+            presses.put(line)
+
+    threading.Thread(target=read, daemon=True).start()
+    return presses
+
+
+def transmit(
+    message: Message,
+    level_db: float,
+    shape: float,
+    src: Device,
+    dst: Device,
+    ptt: Ptt | None = None,
+    txdelay: float = 0.3,
+) -> None:
+    """Mic in, speech with data out, until Ctrl+C. With ptt, Enter keys and unkeys the radio."""
+    sd = _sd()
+    sender = _Sender(message, level_db, shape, txdelay if ptt else 0.0)
+    if ptt is None:
+        sender.key()
+    with sd.Stream(CARD_RATE, BLOCK, (src, dst), channels=1, callback=sender.callback) as stream:
+        if ptt is None:
+            print(f"sending {message} under the mic audio, Ctrl+C to stop")
+        else:
+            print(f"press Enter to key {ptt.name}, Enter again to unkey, Ctrl+C to stop")
+            presses = _enter_presses()
         while stream.active:
-            sd.sleep(500)
-            _report(problems)
+            _report(sender.problems)
+            if ptt is None:
+                sd.sleep(500)
+                continue
+            try:
+                presses.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if sender.keyed:
+                sender.unkey()
+                ptt.key(False)
+                print("receiving")
+            else:
+                ptt.key(True)
+                sender.key()
+                print(f"transmitting {message}")
     sys.exit("audio stream stopped")
 
 
@@ -69,12 +143,29 @@ def _report(problems: queue.Queue[str]) -> None:
         print(f"sound card: {problems.get()}", file=sys.stderr)
 
 
-def play(speech: np.ndarray, message: Message, level_db: float, shape: float, dst: Device) -> None:
-    """Play a recording with data mixed in."""
+def play(
+    speech: np.ndarray,
+    message: Message,
+    level_db: float,
+    shape: float,
+    dst: Device,
+    ptt: Ptt | None = None,
+    txdelay: float = 0.3,
+) -> None:
+    """Play a recording with data mixed in, keying the radio around it when ptt is given."""
     sd = _sd()
     audio = resample_poly(encode(speech, message, level_db, shape), 6, 1)
+    if ptt:
+        # silence while the radio comes up to power, and a little after so the sound card
+        # has drained before unkeying
+        audio = np.concatenate(
+            [np.zeros(int(txdelay * CARD_RATE)), audio, np.zeros(CARD_RATE // 5)]
+        )
+        ptt.key(True)
     print(f"playing {len(speech) / RATE:.1f} s with {message}")
     sd.play(audio.astype(np.float32), CARD_RATE, device=dst, blocking=True)
+    if ptt:
+        ptt.key(False)
 
 
 @contextmanager

@@ -60,11 +60,34 @@ undervoice rx --input "USB Audio"
 ```
 
 `tx` takes your mic, adds the data and sends the result to the radio's audio input; key the radio
-with its own PTT or VOX as usual. `--play` sends a recording instead of the mic. `rx` prints
+with its own PTT or VOX, or let undervoice key it (below). `--play` sends a recording instead of the mic. `rx` prints
 each frame as it is heard, stamped in UTC, warns when the sound card input clips, and with
 `--record session.wav` also saves what it heard so you can run `decode` on it later. `--level`
 (dB relative to the speech) and `--shape` work on every command that sends; `--shape` must
 match on both ends.
+
+### Keying the radio
+
+Most USB radio interfaces (DMK URI, RIM-Lite, the AIOC cable and other CM108-based ones) key
+PTT through a GPIO pin on their sound chip. `--ptt` drives that pin:
+
+```powershell
+undervoice tx --play speech.wav --call W1AW --output "USB Audio" --ptt
+undervoice tx --call W1AW --input "Headset" --output "USB Audio" --ptt
+```
+
+With `--play` the radio is keyed for the whole recording. With the mic, press Enter to key and
+Enter again to unkey; each transmission starts a fresh frame, so none is cut off by unkeying
+mid-frame unless the transmission itself is shorter than 9.3 s. `--txdelay` (default 0.3 s) is
+how long the radio gets to come up to power before audio starts. Most interfaces wire PTT to
+GPIO 3; use `--ptt-gpio` if yours differs. When several interfaces are attached,
+`undervoice devices` numbers them and `--ptt N` picks one. On Linux the user needs write access
+to the interface's `/dev/hidraw*` device, usually through a udev rule.
+
+When the radio is fed through its data port (the 6-pin mini-DIN on most mobiles), it ignores
+its own front-panel mic while transmitting, so speak into a mic on the PC. On radios with a
+1200/9600 data speed setting, use 1200: its receive audio is filtered and de-emphasized like
+the speaker audio undervoice expects.
 
 ## Results so far
 
@@ -228,8 +251,9 @@ care as any other text under 97.113 (no business, no obscenity).
   during pauses would fix this at the cost of being audible.
 - The listening test is published but has no answers yet; the simplex and repeater tests have
   not been done.
-- `tx` starts frames when it starts and runs them back to back; a frame cut off by unkeying is
-  lost.
+- Without `--ptt`, `tx` starts frames when it starts and runs them back to back, so a frame cut
+  off by unkeying is lost. With `--ptt` each transmission starts a fresh frame.
+- `--ptt` has been tested against the CM108 protocol, not yet against a real interface.
 
 ## Building from source
 

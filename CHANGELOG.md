@@ -4,6 +4,11 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- `tx --ptt` keys the radio through a CM108-type USB interface (DMK URI, AIOC and similar), with `--ptt-gpio` and `--txdelay`. In mic mode Enter keys and unkeys, and each transmission starts a fresh frame.
+- `undervoice devices` lists the interfaces that can key PTT.
+
 ## [0.1.0] - 2026-11-19
 
 ### Added
