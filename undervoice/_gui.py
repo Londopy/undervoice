@@ -15,6 +15,7 @@ from typing import Any
 
 from . import _config, _updater
 from ._audio import read_wav
+from ._cwid import ID_EVERY
 from ._live import Listener, Transmitter, cards, play, stop_playing
 from ._message import Message
 from ._modulator import LEVEL_DB, SHAPE
@@ -34,6 +35,8 @@ DARK = {
     "meter": "#3a3a3a",
 }
 NO_PTT = "None: VOX (SignaLink and similar) or I key the radio myself"
+# the data level kept up through pauses, in dB below the recent speech, or off to let it stop
+PAUSES = ("off", "-45", "-40", "-35", "-30")
 CHANNELS = ["stable releases", "beta (pre-releases too)"]
 
 
@@ -100,6 +103,10 @@ class App:
         self.sending = False
         self.held = False
         self.release_pending: str | None = None
+        self.identifying = False
+        # monotonic times for station ID: the last CW ID or reminder, and the last over's end
+        self.last_id: float | None = None
+        self.last_over: float | None = None
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.record_path: str | None = None
         self.settings_path = settings_path or _config.folder() / "config.toml"
@@ -272,6 +279,14 @@ class App:
         ):
             box = ttk.Spinbox(tuning, from_=lo, to=hi, increment=step, textvariable=var, width=7)
             self._field(tuning, label, box, 0, col)
+        self.pause = tk.StringVar(value=PAUSES[0])
+        pauses = ttk.Spinbox(tuning, values=PAUSES, textvariable=self.pause, width=7)
+        pauses.configure(state="readonly")
+        self._field(tuning, "In pauses (dB)", pauses, 0, 3)
+        self.cw_id = tk.BooleanVar(value=False)
+        ttk.Checkbutton(tuning, text="CW ID every 10 minutes", variable=self.cw_id).grid(
+            row=1, column=4, sticky="w", padx=(4, 0), pady=(2, 6)
+        )
 
         actions = ttk.Frame(f)
         actions.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(4, 2))
@@ -381,6 +396,9 @@ class App:
         label = next((lb for lb, how in self.keyers if how and how == radio.get("ptt")), None)
         if label:
             self.ptt_box.set(label)
+        if radio.get("pause") in PAUSES:
+            self.pause.set(radio["pause"])
+        self.cw_id.set(bool(radio.get("cw_id", False)))
         for var, key in ((self.level, "level"), (self.shape, "shape"), (self.txdelay, "txdelay")):
             if key in radio:
                 var.set(str(radio[key]))
@@ -400,6 +418,8 @@ class App:
             "level": self.level.get(),
             "shape": self.shape.get(),
             "txdelay": self.txdelay.get(),
+            "pause": self.pause.get(),
+            "cw_id": self.cw_id.get(),
         }
         self.settings["receive"] = {"always": self.listen_always.get()}
         u = self.settings["updater"]
@@ -515,13 +535,14 @@ class App:
         self.message_ok = ok
         self._show_state()
 
-    def _numbers(self) -> tuple[float, float, float] | None:
+    def _numbers(self) -> tuple[float, float, float, float | None] | None:
         try:
             level, shape, delay = (
                 float(self.level.get()),
                 float(self.shape.get()),
                 float(self.txdelay.get()),
             )
+            pause = None if self.pause.get() == PAUSES[0] else float(self.pause.get())
         except ValueError:
             self.say("Data level, shape and TX delay must be numbers.", error=True)
             return None
@@ -531,7 +552,7 @@ class App:
         if not 0 <= delay <= 5:
             self.say("TX delay must be between 0 and 5 seconds.", error=True)
             return None
-        return level, shape, delay
+        return level, shape, delay, pause
 
     def _index(self, box: ttk.Combobox, devices: list[tuple[int, str]]) -> int | None:
         return next((i for i, n in devices if n == box.get()), None)
@@ -542,14 +563,16 @@ class App:
 
     def _show_state(self) -> None:
         c = self.c
-        if self.tx or self.sending:
+        if self.identifying:
+            text, color = "Sending CW ID", c["tx"]
+        elif self.tx or self.sending:
             text, color = "Transmitting", c["tx"]
         elif self.listener:
             text, color = "Listening", c["rx"]
         else:
             text, color = "Idle", c["muted"]
         self.state.configure(text=text, foreground=color)
-        ready = self.message_ok and bool(self.outputs)
+        ready = self.message_ok and bool(self.outputs) and not self.identifying
         self.tx_button.configure(text="Stop" if self.tx else "Transmit")
         self.tx_button.state(
             ["!disabled"] if (ready and not self.sending) or self.tx else ["disabled"]
@@ -594,7 +617,7 @@ class App:
         message, numbers = self._message(), self._numbers()
         if message is None or numbers is None:
             return
-        level, shape, delay = numbers
+        level, shape, delay, pause = numbers
         try:
             self.ptt = self._open_ptt()
             self.tx = Transmitter(
@@ -605,6 +628,7 @@ class App:
                 self._index(self.to_radio, self.outputs),
                 self.ptt,
                 delay,
+                pause,
             )
             self.tx.key()
         except SetupError as e:
@@ -633,7 +657,7 @@ class App:
         except (OSError, ValueError) as e:
             self.say(f"Can't read {path}: {e}", error=True)
             return
-        level, shape, delay = numbers
+        level, shape, delay, pause = numbers
         try:
             self.ptt = self._open_ptt()
         except SetupError as e:
@@ -641,10 +665,13 @@ class App:
             return
         out = self._index(self.to_radio, self.outputs)
         ptt = self.ptt
+        identify = self._id_due()
+        if identify:
+            self.last_id = time.monotonic()
 
         def work() -> None:
             try:
-                play(speech, message, level, shape, out, ptt, delay)
+                play(speech, message, level, shape, out, ptt, delay, pause, identify)
             except SetupError as e:
                 self.events.put(("error", str(e)))
             finally:
@@ -655,16 +682,50 @@ class App:
         self.say(f"Sending {path} ({len(speech) / RATE:.0f} s) with {message}.")
         self._show_state()
 
+    def _id_due(self) -> bool:
+        if not self.cw_id.get():
+            return False
+        return self.last_id is None or time.monotonic() - self.last_id >= ID_EVERY
+
     def stop_sending(self) -> None:
         self.held = False
         if self.tx:
-            self.tx.close()
-            self.tx = None
-            self._release_ptt()
-            self.say("Stopped transmitting.")
+            tx, ptt = self.tx, self.ptt
+            self.tx, self.ptt = None, None
+            self.last_over = time.monotonic()
+            if self._id_due():
+                self.last_id = self.last_over
+                self.identifying = True
+                self.say("Sending your callsign in Morse before unkeying.")
+
+                def work() -> None:
+                    tx.close(identify=True)
+                    if ptt:
+                        ptt.close()
+                    self.events.put(("identified", None))
+
+                threading.Thread(target=work, daemon=True).start()
+            else:
+                tx.close()
+                if ptt:
+                    ptt.close()
+                self.say("Stopped transmitting.")
         if self.sending:
             stop_playing()
         self._show_state()
+
+    def _remind_id(self) -> None:
+        # without CW ID, a nudge every 10 minutes while the station is in use (97.119)
+        if self.cw_id.get() or (self.last_over is None and not self.tx):
+            return
+        now = time.monotonic()
+        if self.last_id is None:
+            self.last_id = now
+            return
+        recent = self.last_over is not None and now - self.last_over < ID_EVERY
+        if (self.tx or self.sending or recent) and now - self.last_id >= ID_EVERY:
+            self.last_id = now
+            self.say("10 minutes since your last ID: say your callsign.", error=True)
 
     def _release_ptt(self) -> None:
         if self.ptt:
@@ -752,6 +813,7 @@ class App:
             self._event(*self.events.get())
         if self._update_due():
             self.check_updates()
+        self._remind_id()
         self.root.after(100, self._poll)
 
     def _event(self, kind: str, detail: Any) -> None:
@@ -774,6 +836,10 @@ class App:
             self.update_status.configure(text=str(detail), foreground=self.c["tx"])
         elif kind == "restart":
             self.close()
+        elif kind == "identified":
+            self.identifying = False
+            self.say("Sent your callsign in Morse and unkeyed.")
+            self._show_state()
 
     def _draw_meter(self, peak: float | None) -> None:
         self.meter.delete("all")

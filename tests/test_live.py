@@ -212,3 +212,42 @@ def test_window_listens_as_soon_as_it_opens(window, monkeypatch):
     # the USB interface, which the window picks for audio from the radio
     assert app.listener.src == 1
     assert app.rx_button.cget("text") == "Stop listening"
+
+
+def test_cw_id_goes_out_before_unkeying_then_waits_ten_minutes(window):
+    from undervoice._cwid import morse
+
+    make, _ = window
+    app = make()
+    app.call.set("W1AW")
+    app.cw_id.set(True)
+    app.toggle_tx()
+    tx = app.tx
+    app.stop_sending()
+    assert app.identifying
+    # the ID is queued from a background thread so the window stays responsive
+    deadline = time.monotonic() + 2
+    while not len(tx.sender.override) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(tx.sender.override) == len(morse("W1AW"))
+    deadline = time.monotonic() + 10
+    while app.identifying and time.monotonic() < deadline:
+        app.root.update()
+        time.sleep(0.05)
+    assert not app.identifying
+    assert not tx.active
+    # a second over straight after does not identify again
+    app.toggle_tx()
+    second = app.tx
+    app.stop_sending()
+    assert not app.identifying
+    assert len(second.sender.override) == 0
+
+
+def test_reminder_to_identify_without_cw_id(window):
+    make, _ = window
+    app = make()
+    app.last_over = time.monotonic()
+    app.last_id = time.monotonic() - 601
+    app._remind_id()
+    assert "callsign" in app.status.cget("text")

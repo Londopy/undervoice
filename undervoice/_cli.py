@@ -9,7 +9,7 @@ from contextlib import AbstractContextManager, nullcontext
 
 import numpy as np
 
-from . import _live
+from . import _abx, _live
 from ._audio import read_wav, write_wav
 from ._channel import fm_channel
 from ._demodulator import decode
@@ -44,6 +44,35 @@ def _keyer(args: argparse.Namespace) -> AbstractContextManager[Keyer | None]:
     return open_keyer(args.ptt, args.ptt_gpio)
 
 
+def _paths(patterns: list[str]) -> list[str]:
+    # PowerShell hands patterns like speech/*.wav over unexpanded
+    return [p for pattern in patterns for p in sorted(glob.glob(pattern)) or [pattern]]
+
+
+def _abx_session(args: argparse.Namespace) -> None:
+    try:
+        if args.score:
+            print(_abx.report(_abx.load(_paths(args.score))))
+            return
+        if not args.speech:
+            sys.exit("give WAV files of speech to build the trials from, or --score results files")
+        speech = [read_wav(path) for path in _paths(args.speech)]
+        print(f"building {args.trials} trials per level, shape {args.shape}, {args.snr:g} dB link")
+        rng = np.random.default_rng(args.seed)
+        trials = _abx.make_trials(speech, args.levels, args.shape, args.snr, args.trials, rng)
+        if args.export:
+            _abx.export(trials, args.export)
+            print(f"wrote {len(trials)} trials and key.csv to {args.export}")
+            return
+        answers = _abx.run(trials, _abx.speaker(args.output))
+        print(_abx.report(answers))
+        if args.save:
+            _abx.save(answers, args.save)
+            print(f"added {len(answers)} answers to {args.save}; keep one file per shape and SNR")
+    except ValueError as e:
+        sys.exit(str(e))
+
+
 def _message(args: argparse.Namespace) -> Message:
     try:
         return Message(args.call, args.grid, args.status)
@@ -64,6 +93,12 @@ def _add_tuning(p: argparse.ArgumentParser, level: bool = True) -> None:
             type=float,
             default=LEVEL_DB,
             help=f"data level in dB relative to the speech (default {LEVEL_DB})",
+        )
+        p.add_argument(
+            "--pause-level",
+            type=float,
+            help="keep the data going through pauses at this many dB (negative) below the "
+            "recent speech, instead of stopping",
         )
     p.add_argument(
         "--shape",
@@ -116,6 +151,11 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--hops", type=int, default=1)
     p.add_argument("--ppm", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument(
+        "--pause-level",
+        type=float,
+        help="keep data going through pauses at this many dB (negative) below recent speech",
+    )
     _add_tuning(p, level=False)
 
     p = sub.add_parser("tx", help="send data under live mic audio, or under a WAV file")
@@ -142,11 +182,28 @@ def _parser() -> argparse.ArgumentParser:
         default=0.3,
         help="seconds between keying and sending audio (default 0.3)",
     )
+    p.add_argument(
+        "--cw-id",
+        action="store_true",
+        help="end an over with your callsign in Morse when 10 minutes have passed since the last",
+    )
 
     p = sub.add_parser("rx", help="listen on a sound card and print frames")
     _add_tuning(p, level=False)
     p.add_argument("--input", type=_device, help="radio audio device (number or name)")
     p.add_argument("--record", metavar="WAV", help="also save the received audio to this file")
+
+    p = sub.add_parser("abx", help="blind listening test: can you hear the data?")
+    p.add_argument("speech", nargs="*", help="WAV files of speech to build the trials from")
+    p.add_argument("--levels", type=level_list, default=level_list("-24,-18,-12"))
+    p.add_argument("--trials", type=int, default=10, help="trials per level (default 10)")
+    p.add_argument("--snr", type=float, default=40.0, help="simulated FM link SNR (default 40)")
+    p.add_argument("--seed", type=int, help="fixes the trial order; leave out for a fresh one")
+    p.add_argument("--output", type=_device, help="sound device to play on (number or name)")
+    p.add_argument("--save", metavar="CSV", help="append the answers to this results file")
+    p.add_argument("--export", metavar="FOLDER", help="write the clips and answer key instead")
+    p.add_argument("--score", nargs="+", metavar="CSV", help="report on saved results instead")
+    _add_tuning(p, level=False)
 
     sub.add_parser("devices", help="list sound devices")
     sub.add_parser("gui", help="open the undervoice window")
@@ -165,7 +222,10 @@ def main(argv: list[str] | None = None) -> int:
 
 def _run(args: argparse.Namespace) -> int:
     if args.command == "encode":
-        write_wav(args.output, encode(read_wav(args.input), _message(args), args.level, args.shape))
+        mixed = encode(
+            read_wav(args.input), _message(args), args.level, args.shape, args.pause_level
+        )
+        write_wav(args.output, mixed)
     elif args.command == "decode":
         frames = decode(read_wav(args.input), args.shape)
         for f in frames:
@@ -178,12 +238,10 @@ def _run(args: argparse.Namespace) -> int:
         out = fm_channel(read_wav(args.input), args.snr, args.drive, args.hops, args.ppm, rng)
         write_wav(args.output, out)
     elif args.command == "sweep":
-        # PowerShell hands patterns like speech/*.wav over unexpanded
-        paths = [p for pattern in args.speech for p in sorted(glob.glob(pattern)) or [pattern]]
-        speech = [read_wav(path) for path in paths]
+        speech = [read_wav(path) for path in _paths(args.speech)]
         message = Message("N0CALL", "FN31pr", "SWEEP TEST 0123456789 ABCDEFGHIJ")
         print(f"shape {args.shape}, snr {args.snr} dB, hops {args.hops}, ppm {args.ppm}")
-        print("level_db  frames  received  loss_pct  wrong")
+        print("level_db  frames  received  loss_pct  loss_95_upper_pct  wrong")
         for r in sweep(
             speech,
             args.levels,
@@ -194,9 +252,11 @@ def _run(args: argparse.Namespace) -> int:
             args.hops,
             args.ppm,
             args.seed,
+            args.pause_level,
         ):
             print(
-                f"{r.level_db:8.1f}  {r.sent:6d}  {r.received:8d}  {100 * r.loss:8.1f}  {r.wrong:5d}",
+                f"{r.level_db:8.1f}  {r.sent:6d}  {r.received:8d}  {100 * r.loss:8.1f}  "
+                f"{100 * r.loss_upper:17.2f}  {r.wrong:5d}",
                 flush=True,
             )
     elif args.command == "tx":
@@ -206,14 +266,32 @@ def _run(args: argparse.Namespace) -> int:
                 recording = read_wav(args.play)
                 print(f"playing {len(recording) / RATE:.1f} s with {message}")
                 _live.play(
-                    recording, message, args.level, args.shape, args.output, ptt, args.txdelay
+                    recording,
+                    message,
+                    args.level,
+                    args.shape,
+                    args.output,
+                    ptt,
+                    args.txdelay,
+                    args.pause_level,
+                    args.cw_id,
                 )
             else:
                 _live.transmit(
-                    message, args.level, args.shape, args.input, args.output, ptt, args.txdelay
+                    message,
+                    args.level,
+                    args.shape,
+                    args.input,
+                    args.output,
+                    ptt,
+                    args.txdelay,
+                    args.pause_level,
+                    args.cw_id,
                 )
     elif args.command == "rx":
         _live.receive(args.shape, args.input, args.record)
+    elif args.command == "abx":
+        _abx_session(args)
     elif args.command == "devices":
         _live.devices()
     elif args.command == "gui":
