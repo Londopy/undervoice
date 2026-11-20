@@ -17,6 +17,7 @@ import numpy as np
 from scipy.signal import resample_poly
 
 from ._audio import Decimator, Interpolator, to_int16
+from ._cwid import ID_EVERY, morse
 from ._demodulator import Frame, decode
 from ._message import Message
 from ._modulator import Modulator, encode
@@ -90,8 +91,15 @@ class _Sender:
     with each keying and again whenever speech comes back after a pause long enough to be a
     new over, so a radio keyed by its own PTT or VOX still gets frames lined up with overs."""
 
-    def __init__(self, message: Message, level_db: float, shape: float, delay: float):
-        self.args = (message, level_db, shape)
+    def __init__(
+        self,
+        message: Message,
+        level_db: float,
+        shape: float,
+        delay: float,
+        pause_db: float | None = None,
+    ):
+        self.args = (message, level_db, shape, pause_db)
         self.mod = Modulator(*self.args)
         self.down, self.up = Decimator(), Interpolator()
         self.delay = delay
@@ -99,13 +107,19 @@ class _Sender:
         self.hold = 0
         self.quiet = 0
         self.loudest = 0.0
+        # audio sent in place of the mic, for the Morse ID at the end of an over
+        self.override = np.zeros(0)
         self.problems: queue.Queue[str] = queue.Queue()
 
     def callback(self, indata, outdata, frames, when, status) -> None:
         if status:
             self.problems.put(str(status))
         speech = self.down(indata[:, 0])
-        if self.keyed and self.hold <= 0:
+        if len(self.override):
+            chunk = self.override[: len(speech)]
+            self.override = self.override[len(speech) :]
+            outdata[:, 0] = self.up(np.pad(chunk, (0, len(speech) - len(chunk))))
+        elif self.keyed and self.hold <= 0:
             self._watch_pauses(speech)
             outdata[:, 0] = self.up(self.mod.process(speech))
         else:
@@ -146,10 +160,11 @@ class Transmitter:
         dst: Device,
         ptt: Keyer | None = None,
         txdelay: float = 0.3,
+        pause_db: float | None = None,
     ):
         self.message = message
         self.ptt = ptt
-        self.sender = _Sender(message, level_db, shape, txdelay if ptt else 0.0)
+        self.sender = _Sender(message, level_db, shape, txdelay if ptt else 0.0, pause_db)
         sd = _sd()
         self.stream = _open(
             sd.Stream, CARD_RATE, BLOCK, (src, dst), channels=1, callback=self.sender.callback
@@ -169,12 +184,22 @@ class Transmitter:
             self.ptt.key(True)
         self.sender.key()
 
+    def identify(self) -> None:
+        """Send the callsign in Morse, while still keyed, and wait until it has gone out."""
+        tone = morse(self.message.call)
+        self.sender.override = tone
+        # the length of the tone plus the sound card's output buffering
+        time.sleep(len(tone) / RATE + 0.3)
+
     def unkey(self) -> None:
         self.sender.unkey()
         if self.ptt:
             self.ptt.key(False)
 
-    def close(self) -> None:
+    def close(self, identify: bool = False) -> None:
+        """Unkey and release the sound card, sending the Morse ID first when asked."""
+        if identify and self.keyed:
+            self.identify()
         self.unkey()
         self.stream.stop()
         self.stream.close()
@@ -204,9 +229,18 @@ def transmit(
     dst: Device,
     ptt: Keyer | None = None,
     txdelay: float = 0.3,
+    pause_db: float | None = None,
+    cw_id: bool = False,
 ) -> None:
-    """Mic in, speech with data out, until Ctrl+C. With ptt, Enter keys and unkeys the radio."""
-    tx = Transmitter(message, level_db, shape, src, dst, ptt, txdelay)
+    """Mic in, speech with data out, until Ctrl+C. With ptt, Enter keys and unkeys the radio.
+    With cw_id, an over that ends 10 minutes or more after the last ID ends with the callsign
+    in Morse."""
+    tx = Transmitter(message, level_db, shape, src, dst, ptt, txdelay, pause_db)
+    last_id: float | None = None
+
+    def id_due() -> bool:
+        return cw_id and (last_id is None or time.monotonic() - last_id >= ID_EVERY)
+
     try:
         if ptt is None:
             tx.key()
@@ -224,13 +258,17 @@ def transmit(
             except queue.Empty:
                 continue
             if tx.keyed:
+                if id_due():
+                    print("sending CW ID")
+                    tx.identify()
+                    last_id = time.monotonic()
                 tx.unkey()
                 print("receiving")
             else:
                 tx.key()
                 print(f"transmitting {message}")
     finally:
-        tx.close()
+        tx.close(identify=id_due())
     raise SetupError("audio stream stopped")
 
 
@@ -242,10 +280,16 @@ def play(
     dst: Device,
     ptt: Keyer | None = None,
     txdelay: float = 0.3,
+    pause_db: float | None = None,
+    cw_id: bool = False,
 ) -> None:
-    """Play a recording with data mixed in, keying the radio around it when ptt is given."""
+    """Play a recording with data mixed in, keying the radio around it when ptt is given, and
+    ending with the callsign in Morse when cw_id is set."""
     sd = _sd()
-    audio = resample_poly(encode(speech, message, level_db, shape), 6, 1)
+    mixed = encode(speech, message, level_db, shape, pause_db)
+    if cw_id:
+        mixed = np.concatenate([mixed, np.zeros(RATE // 4), morse(message.call)])
+    audio = resample_poly(mixed, 6, 1)
     if ptt:
         # silence while the radio comes up to power, and a little after so the sound card
         # has drained before unkeying
