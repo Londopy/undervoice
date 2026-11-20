@@ -4,6 +4,8 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-19
+
 ### Added
 
 - A sub-audible mode (`--mode sub`, or **Mode** in the window): the same payload as DBPSK on a 150 Hz carrier below the voice band, a frame every 5.9 s at a constant level, for radios with a flat 9600-baud data port on tone-free simplex channels. `channel --path flat` simulates that port. Changing **Mode** while the window listens starts listening again in the new mode.
@@ -18,6 +20,7 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 
 - A WAV file that is missing or is not a WAV is reported by name instead of with a traceback.
 - PTT lets go of the serial port, USB interface or rigctld connection even when unkeying fails, so the next try can open it again.
+- A USB interface that refuses the PTT command is reported as an error instead of being ignored.
 
 ## [0.4.0] - 2026-11-19
 
@@ -61,7 +64,8 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 - `rx --record` saves received audio for offline decoding, and `rx` warns when the input clips.
 - README sections on testing over the air and on the Part 97 rules.
 
-[Unreleased]: https://github.com/Londopy/undervoice/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Londopy/undervoice/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Londopy/undervoice/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Londopy/undervoice/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Londopy/undervoice/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Londopy/undervoice/compare/v0.1.0...v0.2.0
