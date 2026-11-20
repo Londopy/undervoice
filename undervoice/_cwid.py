@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 
 from ._waveform import RATE
 
 # 97.119 asks for an ID at least every 10 minutes during a communication
 ID_EVERY = 600.0
+# an ID can only go out when an over ends, so it falls due this much early, leaving the over
+# that is going at the time a minute to end inside the limit
+ID_MARGIN = 60.0
 WPM = 20
 TONE = 800.0
 LEVEL = 0.3
@@ -22,9 +27,15 @@ CODE = {
 }  # fmt: skip
 
 
+def due(last_id: float | None) -> bool:
+    """Whether an over ending now should end with the ID, given the time.monotonic() of the
+    last one, or None if there has been none."""
+    return last_id is None or time.monotonic() - last_id >= ID_EVERY - ID_MARGIN
+
+
 def morse(call: str, wpm: float = WPM, tone: float = TONE, level: float = LEVEL) -> np.ndarray:
     """The callsign keyed at wpm (PARIS timing) as RATE audio, with 5 ms edges so it does
-    not click."""
+    not click. A space is a word gap."""
     unit = int(RATE * 1.2 / wpm)
     t = np.arange(unit * 3) / RATE
     edge = int(0.005 * RATE)
@@ -41,14 +52,17 @@ def morse(call: str, wpm: float = WPM, tone: float = TONE, level: float = LEVEL)
     def off(units: int) -> None:
         pieces.append(np.zeros(unit * units))
 
-    for i, ch in enumerate(call.upper()):
-        if ch not in CODE:
-            raise ValueError(f"no Morse for {ch!r} in callsign {call!r}")
-        if i:
-            off(3)
-        for j, mark in enumerate(CODE[ch]):
-            if j:
-                off(1)
-            on(1 if mark == "." else 3)
+    for w, word in enumerate(call.upper().split()):
+        if w:
+            off(7)
+        for i, ch in enumerate(word):
+            if ch not in CODE:
+                raise ValueError(f"no Morse for {ch!r} in callsign {call!r}")
+            if i:
+                off(3)
+            for j, mark in enumerate(CODE[ch]):
+                if j:
+                    off(1)
+                on(1 if mark == "." else 3)
     off(3)
     return np.concatenate(pieces)
