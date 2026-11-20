@@ -17,8 +17,9 @@ PRE = bilinear([750e-6, 1.0], [1 / (2 * np.pi * 20000), 1.0], fs=RATE)
 DE = (PRE[1], PRE[0])
 
 
-def _transmit(x: np.ndarray, drive_db: float) -> np.ndarray:
-    x = lfilter(*PRE, sosfilt(TX_HPF, x))
+def _transmit(x: np.ndarray, drive_db: float, voice: bool) -> np.ndarray:
+    if voice:
+        x = lfilter(*PRE, sosfilt(TX_HPF, x))
     # mic gain set so speech peaks run drive_db into the deviation limiter
     peak = np.percentile(np.abs(x), 99.9)
     x = np.clip(x * 10 ** (drive_db / 20) / max(peak, 1e-12), -1.0, 1.0)
@@ -46,16 +47,27 @@ def fm_channel(
     hops: int = 1,
     ppm: float = 0.0,
     rng: np.random.Generator | None = None,
+    *,
+    path: str = "voice",
 ) -> np.ndarray:
     """Pass audio through `hops` FM links (1 = simplex, 2 = through a repeater).
 
-    ppm offsets the receiving sound card's clock from the sending one.
+    ppm offsets the receiving sound card's clock from the sending one. path="flat" goes in
+    through each radio's 9600 baud data port and out of its discriminator instead of the mic
+    and speaker: no 300 Hz filters and no emphasis, the same limiter and noise.
     """
+    if path not in ("voice", "flat"):
+        raise ValueError(f"path must be 'voice' or 'flat', got {path!r}")
+    voice = path == "voice"
     rng = rng or np.random.default_rng()
     x = audio
     for _ in range(hops):
-        sent = _transmit(x, drive_db)
-        x = _receive(sent + _noise(len(sent), snr_db, rng))
+        sent = _transmit(x, drive_db, voice)
+        # the same discriminator noise on both paths, so snr_db means the same signal
+        # strength; only the voice path's de-emphasis flattens its rise with frequency
+        x = sent + _noise(len(sent), snr_db, rng)
+        if voice:
+            x = _receive(x)
     if ppm:
         step = 1 + ppm * 1e-6
         x = resample_at(x, np.arange(int(len(x) / step)) * step)
