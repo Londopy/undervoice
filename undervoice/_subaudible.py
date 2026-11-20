@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 from scipy.ndimage import uniform_filter1d
 from scipy.signal import (
@@ -18,7 +20,8 @@ from scipy.signal import (
 
 from ._demodulator import Frame
 from ._fec import decode_bits, encode_bits
-from ._message import Message, pack, unpack
+from ._frames import Frames
+from ._message import Message, Part, unpack
 from ._waveform import RATE
 
 CARRIER = 150
@@ -51,18 +54,20 @@ SYNC_DETECT = 0.45
 TIMING_BLOCK = 31
 
 
-def _chips(message: Message) -> np.ndarray:
+def _chips(payload: bytes) -> np.ndarray:
     # one per symbol: +1 keeps the carrier phase, -1 flips it
-    return np.concatenate([SYNC, 1.0 - 2.0 * encode_bits(pack(message))])
+    return np.concatenate([SYNC, 1.0 - 2.0 * encode_bits(payload)])
 
 
 class Modulator:
     """Adds frames of message to speech at a constant level_db, the data's power relative to a
     full-scale sine, block by block with no delay. The speech is high-passed at 300 Hz and
-    pre-emphasized, since through the data port the radio does neither."""
+    pre-emphasized, since through the data port the radio does neither. Message parts given
+    to frames.send() go out next."""
 
     def __init__(self, message: Message, level_db: float = LEVEL_DB):
-        self.chips = _chips(message)
+        self.frames = Frames(message, _chips)
+        self.chips = np.zeros(FRAME_SYMBOLS)
         self.amplitude = 10 ** (level_db / 20)
         self.n = 0
         self.k = 0
@@ -80,8 +85,12 @@ class Modulator:
         self.n += len(speech)
         impulses = np.zeros(len(speech))
         for i in np.flatnonzero(n % SYMBOL == 0):
+            if self.k == 0:
+                self.chips = self.frames.start()
             self.sign *= self.chips[self.k]
             self.k = (self.k + 1) % FRAME_SYMBOLS
+            if self.k == 0:
+                self.frames.finish()
             impulses[i] = self.sign
         data, self.pulse_zi = lfilter(PULSE, 1.0, impulses, zi=self.pulse_zi)
         voice, self.speech_zi = sosfilt(SPEECH_HPF, speech, zi=self.speech_zi)
@@ -89,9 +98,14 @@ class Modulator:
         return voice + self.amplitude * data * np.cos(2 * np.pi * CARRIER * n / RATE)
 
 
-def encode(speech: np.ndarray, message: Message, level_db: float = LEVEL_DB) -> np.ndarray:
-    """Mix repeating frames of message into a whole recording. Frames start at sample 0."""
-    return Modulator(message, level_db).process(speech)
+def encode(
+    speech: np.ndarray, message: Message, level_db: float = LEVEL_DB, parts: Sequence[Part] = ()
+) -> np.ndarray:
+    """Mix frames into a whole recording, starting at sample 0: the message parts, then
+    message over and over."""
+    mod = Modulator(message, level_db)
+    mod.frames.send(parts)
+    return mod.process(speech)
 
 
 def _baseband(audio: np.ndarray) -> np.ndarray:
@@ -133,10 +147,11 @@ def _frame(y: np.ndarray, t0: int) -> Frame | None:
     # the carrier phase cancels in p, leaving the signal in the real part and only noise in
     # the imaginary part
     noise = uniform_filter1d(p.imag**2, 25, mode="nearest") + 1e-30
-    message = unpack(decode_bits((p.real / noise)[len(SYNC) - 1 :]))
+    payload = decode_bits((p.real / noise)[len(SYNC) - 1 :])
+    message = unpack(payload)
     if message is None:
         return None
-    signal = float(np.mean(_chips(message)[1:] * p.real))
+    signal = float(np.mean(_chips(payload)[1:] * p.real))
     snr = 10 * np.log10(signal**2 / (float(np.mean(p.imag**2)) + 1e-30))
     return Frame(t0 + offset - DELAY, message, snr)
 

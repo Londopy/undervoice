@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol
 
 import numpy as np
 
 from . import _demodulator, _modulator, _subaudible
 from ._demodulator import Frame
-from ._message import Message
+from ._frames import Frames
+from ._message import Message, Part
 
 VOICE = "voice"
 SUB = "sub"
@@ -16,6 +18,8 @@ MODES = (VOICE, SUB)
 
 
 class Mixer(Protocol):
+    frames: Frames
+
     def process(self, speech: np.ndarray) -> np.ndarray: ...
 
 
@@ -35,10 +39,11 @@ def encode(
     level_db: float,
     shape: float,
     pause_db: float | None = None,
+    parts: Sequence[Part] = (),
 ) -> np.ndarray:
     if mode == SUB:
-        return _subaudible.encode(speech, message, level_db)
-    return _modulator.encode(speech, message, level_db, shape, pause_db)
+        return _subaudible.encode(speech, message, level_db, parts)
+    return _modulator.encode(speech, message, level_db, shape, pause_db, parts)
 
 
 def decode(mode: str, audio: np.ndarray, shape: float) -> list[Frame]:

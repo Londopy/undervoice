@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 from scipy.signal import lfilter
 
 from ._fec import encode_bits
+from ._frames import Frames
 from ._lpc import HOP, ORDER, bandwidth, lpc
-from ._message import Message, pack
+from ._message import Message, Part
 from ._waveform import FRAME, frame_wave
 
 LEVEL_DB = -18.0
@@ -22,7 +25,7 @@ def _rms(x: np.ndarray) -> float:
 
 class Modulator:
     """Adds data to speech, shaped like it and level_db below it, block by block.
-    Output lags input by one 20 ms hop.
+    Output lags input by one 20 ms hop. Message parts given to frames.send() go out next.
 
     With pause_db set, the data carries on through pauses at pause_db below the recent speech
     level instead of stopping, trading a faint hiss in the gaps for frames that survive them.
@@ -41,7 +44,8 @@ class Modulator:
             raise ValueError(
                 f"the pause level ({pause_db:g} dB) can't be above the data level ({level_db:g} dB)"
             )
-        self.wave = frame_wave(encode_bits(pack(message)))
+        self.frames = Frames(message, lambda payload: frame_wave(encode_bits(payload)))
+        self.wave = np.zeros(FRAME)
         self.ratio = 10 ** (level_db / 20)
         self.pause_ratio = 0.0 if pause_db is None else 10 ** (pause_db / 20)
         self.recent = 0.0
@@ -72,8 +76,12 @@ class Modulator:
     def _hop(self, speech: np.ndarray) -> np.ndarray:
         a = lpc(np.concatenate([self.previous, speech]))
         self.previous = speech
+        if self.pos == 0:
+            self.wave = self.frames.start()
         data = self.wave[self.pos : self.pos + HOP]
         self.pos = (self.pos + HOP) % FRAME
+        if self.pos == 0:
+            self.frames.finish()
         shaped, self.zi = lfilter([1.0], bandwidth(a, self.shape), data, zi=self.zi)
         level = _rms(speech)
         self.recent = max(level, self.recent * RECENT_FADE)
@@ -90,7 +98,10 @@ def encode(
     level_db: float = LEVEL_DB,
     shape: float = SHAPE,
     pause_db: float | None = None,
+    parts: Sequence[Part] = (),
 ) -> np.ndarray:
-    """Mix repeating frames of message under a whole recording. Frames start at sample 0."""
+    """Mix frames under a whole recording, starting at sample 0: the message parts, then
+    message over and over."""
     mod = Modulator(message, level_db, shape, pause_db)
+    mod.frames.send(parts)
     return mod.process(np.concatenate([speech, np.zeros(HOP)]))[HOP:]

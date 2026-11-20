@@ -11,7 +11,7 @@ from scipy.signal import correlate, fftconvolve, find_peaks, firwin, hilbert
 from ._audio import resample_at
 from ._fec import decode_bits
 from ._lpc import HOP, match, whiten
-from ._message import Message, unpack
+from ._message import Payload, unpack
 from ._modulator import SHAPE
 from ._waveform import FRAME, FRAME_SYMBOLS, PILOTS, RATE, SYMBOL, reference
 
@@ -28,7 +28,7 @@ SUBBANDS = [firwin(101, [lo, hi], pass_zero=False, fs=RATE) for lo, hi in zip(ED
 @dataclass(frozen=True)
 class Frame:
     start: float
-    message: Message
+    message: Payload
     snr_db: float
 
 

@@ -19,6 +19,7 @@ from scipy.signal import resample_poly
 from ._audio import Decimator, Interpolator, to_int16
 from ._cwid import due, morse
 from ._demodulator import Frame
+from ._frames import Frames
 from ._message import Message
 from ._modes import VOICE, decode, encode, mixer
 from ._modulator import Modulator
@@ -144,8 +145,11 @@ class _Sender:
         self.quiet = 0
 
     def key(self) -> None:
-        # a fresh modulator starts a frame with each transmission, after the radio's TX delay
+        # a fresh modulator starts a frame with each transmission, after the radio's TX delay;
+        # message parts still to go carry over to it
+        frames = self.mod.frames
         self.mod = mixer(self.mode, *self.args)
+        self.mod.frames = frames
         self.hold = int(self.delay * RATE)
         self.quiet = 0
         self.keyed = True
@@ -186,6 +190,11 @@ class Transmitter:
     @property
     def active(self) -> bool:
         return bool(self.stream.active)
+
+    @property
+    def frames(self) -> Frames:
+        """Queue message parts here; they go out in the overs that follow."""
+        return self.sender.mod.frames
 
     def key(self) -> None:
         if self.ptt:
