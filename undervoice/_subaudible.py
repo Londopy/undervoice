@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.ndimage import uniform_filter1d
-from scipy.signal import correlate, ellip, fftconvolve, find_peaks, firwin, lfilter, sosfilt
+from scipy.signal import (
+    bilinear,
+    correlate,
+    ellip,
+    fftconvolve,
+    find_peaks,
+    firwin,
+    freqz,
+    lfilter,
+    sosfilt,
+)
 
 from ._demodulator import Frame
 from ._fec import decode_bits, encode_bits
 from ._message import Message, pack, unpack
-from ._channel import PRE
 from ._waveform import RATE
 
 CARRIER = 150
@@ -30,12 +39,11 @@ PULSE *= np.sqrt(SYMBOL / np.sum(PULSE**2))
 SPEECH_HPF = ellip(8, 0.5, 60, 300, "highpass", fs=RATE, output="sos")
 LOWPASS = firwin(529, 275, fs=RATE)
 # the data port skips the radio's 750 us pre-emphasis, so the voice gets it here instead, or
-# ordinary receivers' de-emphasis would leave it dull; unity gain at 1 kHz keeps its level
-_TO_1KHZ = np.exp(-2j * np.pi * 1000 / RATE)
-EMPHASIS = (
-    PRE[0] / abs(np.polyval(PRE[0][::-1], _TO_1KHZ) / np.polyval(PRE[1][::-1], _TO_1KHZ)),
-    PRE[1],
-)
+# ordinary receivers' de-emphasis would leave it dull. With the pole at 3.5 kHz the digital
+# filter follows the analog one within 0.2 dB from 300 Hz to 3 kHz, then levels off; unity
+# gain at 1 kHz keeps the voice's level
+_B, _A = bilinear([750e-6, 1.0], [1 / (2 * np.pi * 3500), 1.0], fs=RATE)
+EMPHASIS = (_B / abs(freqz(_B, _A, worN=[1000], fs=RATE)[1][0]), _A)
 # a frame the error correction can still decode scores 0.55 or more, and random data rarely
 # passes 0.5; a false peak only costs a failed decode
 SYNC_DETECT = 0.45
@@ -62,10 +70,6 @@ class Modulator:
         self.pulse_zi = np.zeros(len(PULSE) - 1)
         self.speech_zi = np.zeros((len(SPEECH_HPF), 2))
         self.emphasis_zi = np.zeros(1)
-
-    def restart(self) -> None:
-        """Start a fresh frame at the next symbol, at most 10 ms on."""
-        self.k = 0
 
     def process(self, speech: np.ndarray) -> np.ndarray:
         """Take any number of speech samples and return as many mixed samples."""

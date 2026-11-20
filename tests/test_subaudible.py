@@ -75,15 +75,34 @@ def test_streaming_matches_whole_file(speech):
     np.testing.assert_allclose(streamed, encode(clip, MSG), atol=1e-12)
 
 
-def test_restart_starts_a_frame_at_the_next_symbol(speech):
-    mod = Modulator(MSG)
-    head = mod.process(speech[:16007])
-    mod.restart()
-    frames = decode(np.concatenate([head, mod.process(speech[16007:])]))
-    # 16080 is the first symbol boundary after the restart; the frame it cut short is lost
-    assert [f.message for f in frames] == [MSG] * ((len(speech) - 16080) // FRAME)
-    starts = [f.start for f in frames]
-    np.testing.assert_allclose(starts, 16080 + FRAME * np.arange(len(frames)), atol=1.0)
+def test_speech_is_high_passed_then_pre_emphasized_like_a_radio():
+    t = np.arange(2 * RATE) / RATE
+    # the data path ignores the speech, so taking the data alone away leaves the voice path
+    data = Modulator(MSG).process(np.zeros(len(t)))
+
+    def gain_db(freq):
+        tone = 0.1 * np.sin(2 * np.pi * freq * t)
+        voice = (Modulator(MSG).process(tone) - data)[RATE:]
+        return 20 * np.log10(np.sqrt(np.mean(voice**2)) / np.sqrt(np.mean(tone[RATE:] ** 2)))
+
+    assert gain_db(1000) == pytest.approx(0.0, abs=0.1)
+    # the analog 750 us network's rise from 1 to 3 kHz, to within the high-pass's 0.5 dB ripple
+    analog = abs(1 + 2j * np.pi * 3000 * 750e-6) / abs(1 + 2j * np.pi * 1000 * 750e-6)
+    assert gain_db(3000) - gain_db(1000) == pytest.approx(20 * np.log10(analog), abs=0.5)
+    # nothing of the voice is left where the data is
+    assert max(gain_db(f) for f in (100, 150, 200, 250)) < -60
+
+
+def test_default_level_has_the_power_of_a_sine_at_minus_18_dbfs():
+    data = encode(np.zeros(4 * FRAME), MSG)
+    # a sine of peak amplitude a has power a**2 / 2
+    assert 10 * np.log10(np.mean(data**2)) == pytest.approx(-18 - 10 * np.log10(2), abs=0.2)
+
+
+def test_frames_far_down_in_the_noise_are_still_found(speech):
+    # about 6 dB of SNR per symbol, which scores well under a perfect sync match
+    rx = _data_port(encode(speech, MSG, -42.0), 20, np.random.default_rng(0))
+    assert [f.message for f in decode(rx)] == [MSG] * (len(speech) // FRAME)
 
 
 @pytest.mark.slow

@@ -18,8 +18,6 @@ MODES = (VOICE, SUB)
 class Mixer(Protocol):
     def process(self, speech: np.ndarray) -> np.ndarray: ...
 
-    def restart(self) -> None: ...
-
 
 def mixer(
     mode: str, message: Message, level_db: float, shape: float, pause_db: float | None
