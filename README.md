@@ -130,6 +130,36 @@ hand with **Listen**) and fills the Received table with each frame as it decodes
 first. It shows the input level so you can set the radio's volume, and can record the session
 to a file. The window follows Windows' light or dark setting.
 
+### Checking your setup
+
+Before going on the air, the window's **Test microphone** button (or `undervoice check`) records
+about 11 seconds of you talking, with the input meter showing the level, then:
+
+- says whether the microphone level is good, too quiet or clipping;
+- mixes your data into the recording exactly as a transmission would, and decodes it back, so
+  the whole chain short of the radio is proven;
+- plays the result on the PC's speakers, so you hear what would go to the radio, data and all.
+
+**Test PTT** (or `undervoice check --ptt ...`) keys the radio for 2 seconds through the PTT
+method you picked, so you can see the transmit light come on. It really transmits: use a dummy
+load or a clear frequency, and identify as usual.
+
+```powershell
+undervoice check --call W1AW --input "Headset" --ptt COM5
+```
+
+### Two modes
+
+**Under the voice** (the default) is everything described above: data hidden in the speech's
+own band, so it goes wherever the voice goes, repeaters included.
+
+**Sub-audible** (`--mode sub`, or **Mode** in the window) carries the same payload below
+300 Hz, where CTCSS tones live, at a constant level that listeners' radios filter out. It is
+faster (a frame every 5.9 s) and never depends on the speech, so pauses cost nothing. The
+catches: it needs the radio's flat 9600-baud data port (set the D710G's data speed to 9600 for
+this mode), CTCSS and DCS must be off on that channel, and most repeaters strip or regenerate
+everything below 300 Hz, so in practice it is for simplex. The format is under Format below.
+
 ### Keying the radio
 
 `--ptt` (or the PTT box in the window) keys the radio four ways, which between them cover the
@@ -261,6 +291,22 @@ It is off by default because during a pause there is no speech to hide the data,
 it can go before listeners hear it is for the listening test to settle. On a clean path it
 makes no difference, since frames already come through.
 
+**Sub-audible mode**, through the simulated flat data-port path (`channel --path flat`), 20
+frames per cell; the level is the data's power relative to a full-scale sine:
+
+| Level | 40 dB | 30 dB | 20 dB | 10 dB |
+|---|---|---|---|---|
+| -48 dB | 0% | 0% | 90% | 100% |
+| -42 dB | 0% | 0% | 0% | 100% |
+| -36 dB | 0% | 0% | 0% | 0% |
+| -18 dB (default) | 0% | 0% | 0% | 0% |
+
+The simulator has no FM threshold clicks, so the 10 dB column flatters it. At the default it
+also decoded every frame with a 1000 ppm clock offset, a large DC offset, mains hum up to
+-24 dBFS and a 200 Hz high-pass on the receiving side. A CTCSS tone on the sending radio is
+what breaks it: at 15% deviation, tones from 136 to 193 Hz stop it completely, so turn tones
+off for this mode. Through a repeater it decoded nothing.
+
 Over a real sound card (a VB-Audio virtual cable from `tx --play` to `rx`) every frame came
 through.
 
@@ -308,9 +354,51 @@ RMS. Sample `n` of the data signal is that filtered chip times the sign of the s
 **Shaping.** For every 20 ms (160 samples) of speech the transmitter finds the 12th-order LPC
 filter A(z) of that block and the one before it (320 samples, Hann window, autocorrelation
 method), runs the data through 1/A(z/shape), and scales it so its RMS is `level` dB below the
-speech's RMS for the block, ramping the gain linearly across the block. Silence carries no data.
-`shape` is 0.0 for flat data and approaches 1.0 as the data follows the speech spectrum more
-closely.
+speech's RMS for the block, ramping the gain linearly across the block. Silence carries no data,
+unless a pause level is set: then the target RMS is never less than `pause` dB below the
+recent speech level, where the recent level is the block RMS held at its peak and multiplied by
+0.999 every block. `shape` is 0.0 for flat data and approaches 1.0 as the data follows the
+speech spectrum more closely.
+
+### Format: sub-audible mode
+
+**Audio.** 8000 samples per second, mono. Every symbol is 80 samples (100 baud).
+
+**Payload and coding.** The same 34-byte payload and the same code as above: 558 coded bits,
+coded bit `i` in data slot `(37 * i) mod 558`.
+
+**Frame.** 589 symbols (47120 samples, 5.89 s): 31 sync symbols carrying
+`1100011111001101001000010101110`, first bit first, then the 558 data slots in order. Frames
+repeat back to back for as long as there is audio. The sync word is an m-sequence
+(`b[n+5] = b[n+3] XOR b[n]`) in the rotation whose aperiodic autocorrelation sidelobes are no
+more than 4.
+
+**Phase changes.** Every bit sets how the carrier phase changes from the symbol before: a 0
+keeps it and a 1 flips it. With `a[k]` the sign of symbol `k`, `a[k] = a[k-1]` for a 0 and
+`-a[k-1]` for a 1. The signs carry on from frame to frame; the first symbol of a transmission
+follows an implied `+1`.
+
+**Pulse.** Symbol `k` of a frame that starts at sample `s` adds `a[k] * h[n - s - 80k]` to the
+baseband signal, where `h[m] = sinc(2t - 1/2) + sinc(2t + 1/2)` at `t = (m - 320) / 80` for `m`
+from 0 to 640, and `sinc(x) = sin(pi x) / (pi x)`. That is a root-raised-cosine pulse with
+roll-off 1, cut off four symbols either side of its peak, scaled so the squares of `h` sum to
+80. Each pulse starts where its symbol starts and peaks 320 samples later; neighbouring pulses
+overlap.
+
+**Carrier.** The baseband signal times `cos(2 pi * 150 * n / 8000)`, with `n` counting samples
+from the start of the transmission; the receiver does not need its phase. The signal sits
+between 50 and 250 Hz, and everything above 300 Hz is at least 55 dB down.
+
+**Level.** The data is scaled by `10^(level/20)`, which gives it the power of a sine of that
+peak amplitude relative to full scale. It stays constant and does not follow the speech. The
+default, -18 dB, has the power of a CTCSS tone at 12.6% of full deviation when full scale is
+full deviation, and peaks at about 19%.
+
+**Speech.** Before the data is added, the speech goes through an 8th-order elliptic high-pass,
+0.5 dB ripple, 60 dB stopband, passband from 300 Hz
+(`scipy.signal.ellip(8, 0.5, 60, 300, "highpass", fs=8000, output="sos")`), which puts the
+voice at least 60 dB down below 260 Hz, then a 750 us pre-emphasis scaled to unity gain at
+1 kHz, because the data port bypasses the radio's own mic filter and emphasis.
 
 ## How the receiver works
 
@@ -328,7 +416,24 @@ closely.
 5. De-interleave, Viterbi-decode, and keep the frame only if the CRC, version and every field
    check out.
 
+In the sub-audible mode the receiver low-passes the audio at 275 Hz, mixes it down from
+150 Hz and runs it through the same pulse as a matched filter. Multiplying that output by its
+own conjugate one symbol earlier gives the phase change between two symbols at every sample,
+whatever the carrier phase and whichever way up the audio is. The sync word is correlated
+against those products at every sample offset; every peak above 0.45 (a perfect match is 1)
+is tried as a frame start. Symbol timing comes from the symbol-rate line in the squared filter
+output, measured in 19 blocks and fitted with a straight line for the clock offset, and the
+real part of each phase change over the local noise is the soft value for the Viterbi decoder.
+
 ## Design choices
+
+**Both variants from the plan are here.** The plan offered two ways to carry the data: under
+the voice (the default mode) and sub-audible below 300 Hz. Sub-audible is faster and immune to
+pauses but needs a flat data port, tone-free channels and, in practice, simplex; under the voice
+goes anywhere speech goes. The simulator agrees: through a repeater (two links, four 300 Hz
+high-pass filters) the sub-audible mode decodes nothing, while on a single simplex link
+through ordinary mic and speaker audio it still decodes in simulation, depending on how steep
+the radios' 300 Hz filters really are.
 
 **Long frames with pilots, not short frames with a sync word.** The original plan called for
 short frames with a sync word, because speech and squelch cut in and out. Hidden under speech
