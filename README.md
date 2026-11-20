@@ -111,7 +111,8 @@ with its own PTT or VOX, or let undervoice key it (below). `--play` sends a reco
 each frame as it is heard, stamped in UTC, warns when the sound card input clips, and with
 `--record session.wav` also saves what it heard so you can run `decode` on it later. `--level`
 (dB relative to the speech) and `--shape` work on every command that sends; `--shape` must
-match on both ends.
+match on both ends. In the sub-audible mode (below) `--level` is relative to full scale
+instead, and `--shape` and `--pause-level` do nothing.
 
 ### The window
 
@@ -136,9 +137,12 @@ Before going on the air, the window's **Test microphone** button (or `undervoice
 about 11 seconds of you talking, with the input meter showing the level, then:
 
 - says whether the microphone level is good, too quiet or clipping;
-- mixes your data into the recording exactly as a transmission would, and decodes it back, so
-  the whole chain short of the radio is proven;
-- plays the result on the PC's speakers, so you hear what would go to the radio, data and all.
+- mixes your data into the recording as a transmission would and decodes it again in memory,
+  which checks the microphone, its level, and the encoder and decoder at your settings, but
+  not the sound card going to the radio or the radio itself;
+- plays the result on the system's default output, so you hear what would go to the radio,
+  data and all. If that default output is a VOX radio interface such as a SignaLink, this
+  transmits: make the PC's speakers the default output first.
 
 **Test PTT** (or `undervoice check --ptt ...`) keys the radio for 2 seconds through the PTT
 method you picked, so you can see the transmit light come on. It really transmits: use a dummy
@@ -158,7 +162,9 @@ own band, so it goes wherever the voice goes, repeaters included.
 faster (a frame every 5.9 s) and never depends on the speech, so pauses cost nothing. The
 catches: it needs the radio's flat 9600-baud data port (set the D710G's data speed to 9600 for
 this mode), CTCSS and DCS must be off on that channel, and most repeaters strip or regenerate
-everything below 300 Hz, so in practice it is for simplex. The format is under Format below.
+everything below 300 Hz, so in practice it is for simplex. Both ends must use the same mode;
+changing **Mode** in the window while it listens starts listening again in the new mode. The
+format is under Format below.
 
 ### Keying the radio
 
@@ -237,8 +243,8 @@ itself. A copy installed with pip says so and leaves the update to
 
 All of these are measured through the simulated FM channel (`undervoice sweep`), not on the
 air. "40 dB" means a full-deviation 1 kHz tone is 40 dB above the noise at the receiver, which
-leaves these recordings' speech about 22 dB above it; at "30 dB" the speech is about 12 dB above
-the noise. Not one frame in any run decoded to the wrong message.
+leaves these recordings' speech 22 to 28 dB above it, depending on the recording, and about
+10 dB less at "30 dB". Not one frame in any run decoded to the wrong message.
 
 **The spec's target, under 1% frame loss on a clean simplex path:** at the defaults (`--level
 -18 --shape 0.5`, 40 dB, simplex), 480 frames out of 480 came through. That rules out a loss
@@ -277,8 +283,10 @@ can be heard is what the listening test has to answer.
 
 **Pauses.** The data follows the speech level, so it stops when you stop talking, and a frame
 that spans a long pause loses those symbols. `--pause-level` (or **In pauses** in the window)
-keeps it going through pauses at that many dB below the recent speech instead. On the noisy
-30 dB path, 96 frames per cell:
+keeps it going through pauses at that many dB below the recent speech instead; it can't be
+above the data level itself. On the noisy 30 dB path, 96 frames per cell, from
+`undervoice sweep "speech/*.wav" --levels=-21,-18 --trials 8 --snr 30 --seed 2` with each
+`--pause-level`; other seeds move these by a few percent, as 96 frames is not many:
 
 | `--pause-level` | at -21 dB | at -18 dB |
 |---|---|---|
@@ -304,8 +312,9 @@ frames per cell; the level is the data's power relative to a full-scale sine:
 The simulator has no FM threshold clicks, so the 10 dB column flatters it. At the default it
 also decoded every frame with a 1000 ppm clock offset, a large DC offset, mains hum up to
 -24 dBFS and a 200 Hz high-pass on the receiving side. A CTCSS tone on the sending radio is
-what breaks it: at 15% deviation, tones from 136 to 193 Hz stop it completely, so turn tones
-off for this mode. Through a repeater it decoded nothing.
+what breaks it: at 15% deviation, every standard tone from 107.2 to 192.8 Hz stops it
+completely, and the lower and higher ones still cost the odd frame, so turn tones off for this
+mode. Through a repeater it decoded nothing.
 
 Over a real sound card (a VB-Audio virtual cable from `tx --play` to `rx`) every frame came
 through.
@@ -397,8 +406,12 @@ full deviation, and peaks at about 19%.
 **Speech.** Before the data is added, the speech goes through an 8th-order elliptic high-pass,
 0.5 dB ripple, 60 dB stopband, passband from 300 Hz
 (`scipy.signal.ellip(8, 0.5, 60, 300, "highpass", fs=8000, output="sos")`), which puts the
-voice at least 60 dB down below 260 Hz, then a 750 us pre-emphasis scaled to unity gain at
-1 kHz, because the data port bypasses the radio's own mic filter and emphasis.
+voice at least 60 dB down below 260 Hz, then a pre-emphasis, because the data port bypasses
+the radio's own mic filter and emphasis. The pre-emphasis is the bilinear transform at
+8000 Hz of `(1 + 750e-6 s) / (1 + s / (2 pi 3500))`
+(`scipy.signal.bilinear([750e-6, 1], [1 / (2 * pi * 3500), 1], fs=8000)`), scaled to unity
+gain at 1 kHz. It rises 6 dB per octave like a radio's 750 us network, within 0.2 dB of it
+from 300 Hz to 3 kHz (+9.4 dB at 3 kHz), then levels off, reaching +10.6 dB at 3.9 kHz.
 
 ## How the receiver works
 
@@ -430,10 +443,10 @@ real part of each phase change over the local noise is the soft value for the Vi
 **Both variants from the plan are here.** The plan offered two ways to carry the data: under
 the voice (the default mode) and sub-audible below 300 Hz. Sub-audible is faster and immune to
 pauses but needs a flat data port, tone-free channels and, in practice, simplex; under the voice
-goes anywhere speech goes. The simulator agrees: through a repeater (two links, four 300 Hz
-high-pass filters) the sub-audible mode decodes nothing, while on a single simplex link
-through ordinary mic and speaker audio it still decodes in simulation, depending on how steep
-the radios' 300 Hz filters really are.
+goes anywhere speech goes. The simulator agrees: through ordinary mic and speaker audio the
+sub-audible mode does not decode reliably at the default level, even on a single simplex link,
+and through a repeater (two links, four 300 Hz high-pass filters) it decodes nothing. It needs
+the flat data port.
 
 **Long frames with pilots, not short frames with a sync word.** The original plan called for
 short frames with a sync word, because speech and squelch cut in and out. Hidden under speech
@@ -468,7 +481,9 @@ symbols thinly across the code, and by starting a fresh frame with each over.
 ## The listening test
 
 The spec's first target is that listeners cannot reliably tell speech with data from speech
-without it in a blind test. `undervoice abx` runs that test:
+without it in a blind test. `undervoice abx` runs that test for the under-the-voice mode.
+Sub-audible data sits below what radios pass to their speakers, so an ABX test of that mode
+would need the flat audio of a data port.
 
 ```powershell
 undervoice abx speech/*.wav --save results.csv
@@ -482,9 +497,12 @@ shuffled together and the level is never shown. At the end it prints, per level,
 answers were right and the chance of doing that well by guessing; a level is "heard" when that
 chance is under 5% over at least 8 answers.
 
+- `--pause-level` keeps the data going through the pauses in the clips at that level, which
+  is the test that settles how high **In pauses** can go.
 - `--save results.csv` appends the answers, so several people can add to one file;
-  `undervoice abx --score results.csv` reports on all of them. Keep one file per `--shape`
-  and `--snr`, since the file does not record them.
+  `undervoice abx --score results.csv` reports on all of them. Keep one file per `--shape`,
+  `--snr` and `--pause-level`, since the file does not record them. A file that is not a
+  results file, or a folder that does not exist, is refused before the first trial.
 - `--export FOLDER` writes the clips as WAVs with an answer key, to play to a listener another
   way.
 - Use headphones, and your own recordings of real QSO audio if you have them; the WAVs in
@@ -539,10 +557,15 @@ the rules, not legal advice; check with ARRL or the FCC before relying on it.
   skeptical reader is most likely to raise, so lead with the published format.
 - **Identify as usual.** 97.119 requires your callsign every 10 minutes and at the end, by CW
   or phone. Nothing in it lets the callsign in the data count as identification. undervoice can
-  help: with `--cw-id` (or **CW ID every 10 minutes** in the window), an over that ends 10
-  minutes or more after the last ID ends with your callsign in Morse at 20 wpm before PTT
-  drops, which 97.119(b)(1) accepts. Without it, the window reminds you every 10 minutes while
-  you are transmitting. Either way, still give your callsign at the end of the QSO.
+  help: with `--cw-id` (or **CW ID before unkeying, when due** in the window), the first over
+  and every over that ends 9 minutes or more after the last ID end with your callsign in Morse
+  at 20 wpm before PTT drops, which 97.119(b)(1) accepts. The ID falls due a minute early
+  because it can only go out as an over ends; when an over runs on past 9 minutes, the window
+  reminds you to say your callsign, or to stop so the CW ID goes out. `tx --play --cw-id`
+  always ends the recording with the ID. Keyed by VOX or by hand, all the time Transmit is on
+  (or `tx` runs) is one over. Without CW ID, the window reminds you every 9 minutes while the
+  station is in use; the command line has no reminder. Either way, still give your callsign at
+  the end of the QSO.
 - **Repeaters.** 97.205(g) says the control operator of a repeater that inadvertently
   retransmits something that breaks the rules is not accountable for it, but the repeater's
   licensee can still limit who and what uses it (97.205(e)). Ask first.

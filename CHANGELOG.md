@@ -6,13 +6,18 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 
 ### Added
 
-- A sub-audible mode (`--mode sub`, or **Mode** in the window): the same payload as DBPSK on a 150 Hz carrier below the voice band, a frame every 5.9 s at a constant level, for radios with a flat 9600-baud data port on tone-free simplex channels. `channel --path flat` simulates that port.
-- Setup checks: **Test microphone** in the window (or `undervoice check`) records you, rates the mic level, mixes in your data and decodes it, and plays back what would be sent; **Test PTT** (or `check --ptt`) keys the radio for 2 seconds.
-- `undervoice abx`: a blind ABX listening test, with results saved to CSV, combined across listeners and scored per level, or the clips exported for playing another way.
-- `--pause-level` and **In pauses** in the window keep the data going through pauses at a set level below the recent speech, so frames survive pauses on noisy paths. Off by default.
-- `--cw-id` and **CW ID every 10 minutes** in the window end an over with your callsign in Morse when 10 minutes have passed since the last ID. Without it the window reminds you to identify every 10 minutes while you transmit.
+- A sub-audible mode (`--mode sub`, or **Mode** in the window): the same payload as DBPSK on a 150 Hz carrier below the voice band, a frame every 5.9 s at a constant level, for radios with a flat 9600-baud data port on tone-free simplex channels. `channel --path flat` simulates that port. Changing **Mode** while the window listens starts listening again in the new mode.
+- Setup checks: **Test microphone** in the window (or `undervoice check`) records you, rates the mic level, mixes in your data and decodes it, and plays back what would be sent on the default output; **Test PTT** (or `check --ptt`) keys the radio for 2 seconds.
+- `undervoice abx`: a blind ABX listening test, with results saved to CSV, combined across listeners and scored per level, or the clips exported for playing another way. `--pause-level` tests data kept up through pauses.
+- `--pause-level` and **In pauses** in the window keep the data going through pauses at a set level below the recent speech, so frames survive pauses on noisy paths. Off by default, and never above the data level.
+- `--cw-id` and **CW ID before unkeying, when due** in the window end the first over, and every over that ends 9 minutes or more after the last ID, with your callsign in Morse, a minute early since it can only go out as an over ends; `tx --play --cw-id` ends the recording with it. The window reminds you to identify when an over runs past 9 minutes, and without CW ID every 9 minutes while the station is in use.
 - `sweep` prints a 95% upper bound on the frame loss rate, and a slow test (`pytest -m slow`, run weekly in CI) shows the under-1% target over 480 frames.
 - README sections on design choices, prior art and the listening test.
+
+### Fixed
+
+- A WAV file that is missing or is not a WAV is reported by name instead of with a traceback.
+- PTT lets go of the serial port, USB interface or rigctld connection even when unkeying fails, so the next try can open it again.
 
 ## [0.4.0] - 2026-11-19
 
