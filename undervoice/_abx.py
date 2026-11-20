@@ -128,9 +128,11 @@ def make_trials(
     snr_db: float,
     per_level: int,
     rng: np.random.Generator,
+    pause_db: float | None = None,
 ) -> list[Trial]:
     """per_level trials at each level, shuffled together. Each is a sentence from the speech
-    with data under it at that level and without, both through the FM channel at snr_db."""
+    with data under it at that level (and pause_db in the pauses) and without, both through
+    the FM channel at snr_db."""
     message = Message("N0CALL", "FN31pr", "LISTENING TEST")
     clips = _clips(speech, per_level)
     # one shuffled deck for every level, so a sentence repeats only once all have been used
@@ -139,7 +141,7 @@ def make_trials(
     for i, level in enumerate(levels):
         # the data runs through the whole recording, as it would on air, and clips are cut
         # from that
-        mixed = [encode(x, message, level, shape) for x in speech]
+        mixed = [encode(x, message, level, shape, pause_db) for x in speech]
         for j in range(per_level):
             rec, start, end = clips[deck[(i * per_level + j) % len(clips)]]
             plain, data = _render(
@@ -238,15 +240,24 @@ def report(answers: Sequence[Answer]) -> str:
     return "\n".join([*rows, "", "To share the result, paste these lines into an issue:", *lines])
 
 
+def check_results(path: str | Path) -> bool:
+    """Raise ValueError if save() could not add to path: a file that is not a results file,
+    or a folder that does not exist. True if the file is new or empty."""
+    path = Path(path)
+    if not path.parent.is_dir():
+        raise ValueError(f"can't save to {path}: there is no folder {path.parent}")
+    if not path.exists() or path.stat().st_size == 0:
+        return True
+    with open(path, newline="", encoding="utf-8") as f:
+        if next(csv.reader(f), None) != COLUMNS:
+            raise ValueError(f"{path} is not an ABX results file, so not adding to it")
+    return False
+
+
 def save(answers: Iterable[Answer], path: str | Path) -> None:
     """Append answers to a results CSV, starting it with a header if it is new, so runs by
     several people can go in one file."""
-    path = Path(path)
-    new = not path.exists() or path.stat().st_size == 0
-    if not new:
-        with open(path, newline="", encoding="utf-8") as f:
-            if next(csv.reader(f), None) != COLUMNS:
-                raise ValueError(f"{path} is not an ABX results file, so not adding to it")
+    new = check_results(path)
     with open(path, "a", newline="", encoding="utf-8") as f:
         out = csv.DictWriter(f, COLUMNS)
         if new:

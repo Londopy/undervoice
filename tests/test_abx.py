@@ -1,4 +1,5 @@
 import csv
+import io
 import re
 import sys
 import types
@@ -11,6 +12,7 @@ from scipy.signal import lfilter
 
 from undervoice import RATE, Message, encode, fm_channel, read_wav
 from undervoice._abx import Answer, export, load, make_trials, report, run, save, speaker
+from undervoice._cli import main
 from undervoice._ptt import SetupError
 
 SPEECH = Path(__file__).parent.parent / "speech" / "OSR_us_000_0010_8k.wav"
@@ -103,18 +105,37 @@ def test_a_and_b_differ_only_by_the_data(speech, trials):
         assert np.linalg.norm(t.a - t.b) < 3 * 10 ** (t.level_db / 20) * np.linalg.norm(plain)
 
 
-def test_where_there_is_no_data_a_and_b_are_the_same_hiss():
+def bursts():
+    """Four bursts of speech-like noise with a second of digital silence around each."""
     rng = np.random.default_rng(3)
     burst = 0.1 * lfilter([1.0], [1.0, -0.9], rng.standard_normal(5 * RATE // 2))
     hush = np.zeros(RATE)
+    return np.concatenate([hush, burst, hush, -burst, hush, burst[::-1], hush, 0.5 * burst, hush])
+
+
+def test_where_there_is_no_data_a_and_b_are_the_same_hiss():
     # digital silence carries no data, so each clip opens with a quarter second of hiss alone
-    recording = np.concatenate(
-        [hush, burst, hush, -burst, hush, burst[::-1], hush, 0.5 * burst, hush]
-    )
-    trials = make_trials([recording], [-18.0], 0.5, 30.0, 4, np.random.default_rng(5))
+    trials = make_trials([bursts()], [-18.0], 0.5, 30.0, 4, np.random.default_rng(5))
     lead = slice(RATE // 100, RATE // 5)
     for t in trials:
         assert np.linalg.norm((t.a - t.b)[lead]) < 0.01 * np.linalg.norm(t.a[lead])
+
+
+def test_with_a_pause_level_the_data_carries_on_into_the_silence():
+    trials = make_trials([bursts()], [-18.0], 0.5, 30.0, 4, np.random.default_rng(5), -30.0)
+    lead = slice(RATE // 100, RATE // 5)
+    heard = [
+        np.linalg.norm((t.a - t.b)[lead]) > 0.05 * np.linalg.norm(t.a[lead])
+        for t in sorted(trials, key=lambda t: t.start)
+    ]
+    # the first burst has no speech before it to hold a level for the pause
+    assert heard == [False, True, True, True]
+
+
+@needs_speech
+def test_x_and_the_data_each_land_on_both_sides(trials):
+    assert {t.x_was for t in trials} == {"A", "B"}
+    assert {t.data_was for t in trials} == {"A", "B"}
 
 
 @needs_speech
@@ -288,3 +309,22 @@ def test_speaker_rejects_a_missing_device_before_any_clip(monkeypatch):
     with pytest.raises(SetupError, match="No output device matching 'Nope'"):
         speaker("Nope")
     assert played == []
+
+
+@needs_speech
+@pytest.mark.parametrize(
+    "save, problem",
+    [("notes.csv", "is not an ABX results file"), ("gone/results.csv", "there is no folder")],
+)
+def test_abx_checks_where_it_saves_before_the_listener_starts(monkeypatch, tmp_path, save, problem):
+    played = []
+    fake_sounddevice(monkeypatch, played)
+    # a listener who plays X and answers every trial
+    monkeypatch.setattr(sys, "stdin", io.StringIO("x\n1\n" * 10))
+    notes = tmp_path / "notes.csv"
+    notes.write_text("a,b\n1,2\n", encoding="utf-8")
+    args = [str(SPEECH), "--levels=-24", "--trials", "3", "--save", str(tmp_path / save)]
+    with pytest.raises(SystemExit, match=problem):
+        main(["abx", *args])
+    assert played == []
+    assert notes.read_text(encoding="utf-8") == "a,b\n1,2\n"

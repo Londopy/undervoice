@@ -1,15 +1,35 @@
+import re
+import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from undervoice import FRAME, RATE, Message, Modulator, decode, encode, fm_channel, read_wav
+from undervoice import (
+    FRAME,
+    RATE,
+    Message,
+    Modulator,
+    decode,
+    encode,
+    fm_channel,
+    read_wav,
+    write_wav,
+)
 from undervoice._cli import main
 from undervoice._lpc import HOP
+from undervoice._subaudible import FRAME as SUB_FRAME
 
 SPEECH = Path(__file__).parent.parent / "speech" / "OSR_us_000_0010_8k.wav"
 pytestmark = pytest.mark.skipif(not SPEECH.exists(), reason="speech recordings not present")
 MSG = Message("W1AW", "FN31pr", "ON THE AIR TESTING 123")
+
+
+@pytest.fixture(autouse=True)
+def no_sound_card(monkeypatch):
+    # the CLI tests here stop before any audio; if one ever got further, it fails rather than
+    # opening the real microphone and speakers
+    monkeypatch.setitem(sys.modules, "sounddevice", None)
 
 
 @pytest.fixture(scope="module")
@@ -100,3 +120,98 @@ def test_pause_level_keeps_data_in_the_gaps(speech):
 def test_pause_level_still_decodes(speech):
     frames = decode(encode(speech, MSG, pause_db=-40.0))
     assert [f.message for f in frames] == [MSG] * (len(speech) // FRAME)
+
+
+def test_the_pause_floor_fades_about_4_db_every_10_seconds():
+    talk = 0.1 * np.random.default_rng(1).standard_normal(3 * RATE)
+    clip = np.concatenate([talk, np.zeros(30 * RATE)])
+    data = encode(clip, MSG, pause_db=-30.0) - clip
+
+    def level_db(seconds_into_pause):
+        start = len(talk) + seconds_into_pause * RATE
+        return 20 * np.log10(np.sqrt(np.mean(data[start : start + RATE // 2] ** 2)))
+
+    # the recent speech level it follows is multiplied by 0.999 every block (Format, Shaping)
+    assert level_db(15) - level_db(5) == pytest.approx(-4.3, abs=0.2)
+
+
+def test_a_pause_level_above_the_data_level_is_refused():
+    with pytest.raises(ValueError, match="can't be above the data level"):
+        Modulator(MSG, -18.0, pause_db=-10.0)
+    Modulator(MSG, -18.0, pause_db=-18.0)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["encode", "in.wav", "out.wav", "--call", "W1AW", "--pause-level", "40"],
+        ["tx", "--call", "W1AW", "--level", "-18", "--pause-level", "-10"],
+        ["check", "--call", "W1AW", "--level", "-30", "--pause-level", "-25"],
+        ["sweep", "in.wav", "--levels=-24,-18", "--pause-level", "-20"],
+        ["abx", "in.wav", "--levels=-24,-18", "--pause-level", "-20"],
+    ],
+)
+def test_cli_refuses_a_pause_level_above_the_data_level(argv, capsys):
+    with pytest.raises(SystemExit) as e:
+        main(argv)
+    assert e.value.code == 2
+    assert "can't be above the data level" in capsys.readouterr().err
+
+
+def test_cli_lets_sub_mode_ignore_the_pause_level(tmp_path):
+    out = tmp_path / "out.wav"
+    args = ["--call", "W1AW", "--mode", "sub", "--pause-level", "-10"]
+    assert main(["encode", str(SPEECH), str(out), *args]) == 0
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["decode", "{wav}"],
+        ["decode", "{wav}", "--mode", "sub"],
+        ["encode", "{wav}", "{out}", "--call", "W1AW"],
+        ["channel", "{wav}", "{out}"],
+        ["sweep", "{wav}"],
+        ["tx", "--play", "{wav}", "--call", "W1AW"],
+        ["abx", "{wav}"],
+    ],
+)
+def test_cli_says_which_wav_it_cannot_read(argv, tmp_path):
+    missing = tmp_path / "nosuch.wav"
+    filled = [a.format(wav=missing, out=tmp_path / "out.wav") for a in argv]
+    with pytest.raises(SystemExit, match=re.escape(f"can't read {missing}: No such file")):
+        main(filled)
+
+
+def test_cli_says_when_a_file_is_not_a_wav(tmp_path):
+    notes = tmp_path / "notes.wav"
+    notes.write_text("not audio", encoding="utf-8")
+    with pytest.raises(SystemExit, match=re.escape(f"can't read {notes}: File format")):
+        main(["decode", str(notes)])
+
+
+def test_cli_sub_mode_round_trip_needs_the_mode_on_both_ends(speech, tmp_path, capsys):
+    mixed = tmp_path / "mixed.wav"
+    assert main(["encode", str(SPEECH), str(mixed), "--call", "W1AW", "--mode", "sub"]) == 0
+    assert main(["decode", str(mixed), "--mode", "sub"]) == 0
+    assert capsys.readouterr().out.count("W1AW") == len(speech) // SUB_FRAME
+    assert main(["decode", str(mixed)]) == 1
+    assert capsys.readouterr().out.strip() == "no frames decoded"
+
+
+def test_cli_channel_flat_path_carries_what_the_voice_path_loses(speech, tmp_path, capsys):
+    # speech peaking at full scale, as with the mic level set right
+    loud = tmp_path / "loud.wav"
+    write_wav(loud, 0.99 * speech / np.max(np.abs(speech)))
+    mixed = tmp_path / "mixed.wav"
+    assert main(["encode", str(loud), str(mixed), "--call", "W1AW", "--mode", "sub"]) == 0
+
+    def frames_through(path):
+        rx = tmp_path / f"{path}.wav"
+        assert main(["channel", str(mixed), str(rx), "--path", path, "--seed", "1"]) == 0
+        main(["decode", str(rx), "--mode", "sub"])
+        return capsys.readouterr().out.count("W1AW")
+
+    flat = frames_through("flat")
+    assert flat == len(speech) // SUB_FRAME
+    assert frames_through("voice") < flat

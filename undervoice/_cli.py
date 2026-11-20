@@ -50,6 +50,24 @@ def _paths(patterns: list[str]) -> list[str]:
     return [p for pattern in patterns for p in sorted(glob.glob(pattern)) or [pattern]]
 
 
+def _read(path: str) -> np.ndarray:
+    try:
+        return read_wav(path)
+    except OSError as e:
+        sys.exit(f"can't read {path}: {e.strerror or e}")
+    except ValueError as e:
+        sys.exit(f"can't read {path}: {e}")
+
+
+def _check_pause(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    pause = getattr(args, "pause_level", None)
+    if pause is None or getattr(args, "mode", VOICE) != VOICE:
+        return
+    level = min(args.levels) if hasattr(args, "levels") else args.level
+    if pause > level:
+        parser.error(f"--pause-level ({pause:g} dB) can't be above the data level ({level:g} dB)")
+
+
 def _check_setup(args: argparse.Namespace) -> None:
     message = _message(args)
     print(f"recording {_check.SECONDS:.0f} s from the microphone: talk normally")
@@ -82,10 +100,19 @@ def _abx_session(args: argparse.Namespace) -> None:
             return
         if not args.speech:
             sys.exit("give WAV files of speech to build the trials from, or --score results files")
-        speech = [read_wav(path) for path in _paths(args.speech)]
-        print(f"building {args.trials} trials per level, shape {args.shape}, {args.snr:g} dB link")
+        if args.save:
+            # before the test, so a wrong file does not cost the listener their answers
+            _abx.check_results(args.save)
+        speech = [_read(path) for path in _paths(args.speech)]
+        pauses = "" if args.pause_level is None else f", {args.pause_level:g} dB in pauses"
+        print(
+            f"building {args.trials} trials per level, shape {args.shape}{pauses}, "
+            f"{args.snr:g} dB link"
+        )
         rng = np.random.default_rng(args.seed)
-        trials = _abx.make_trials(speech, args.levels, args.shape, args.snr, args.trials, rng)
+        trials = _abx.make_trials(
+            speech, args.levels, args.shape, args.snr, args.trials, rng, args.pause_level
+        )
         if args.export:
             _abx.export(trials, args.export)
             print(f"wrote {len(trials)} trials and key.csv to {args.export}")
@@ -94,7 +121,10 @@ def _abx_session(args: argparse.Namespace) -> None:
         print(_abx.report(answers))
         if args.save:
             _abx.save(answers, args.save)
-            print(f"added {len(answers)} answers to {args.save}; keep one file per shape and SNR")
+            print(
+                f"added {len(answers)} answers to {args.save}; keep one file per shape, SNR "
+                "and pause level"
+            )
     except ValueError as e:
         sys.exit(str(e))
 
@@ -118,7 +148,8 @@ def _add_mode(p: argparse.ArgumentParser) -> None:
         choices=MODES,
         default=VOICE,
         help="voice: data under the speech, works through repeaters (default); sub: "
-        "sub-audible below 300 Hz through a 9600 data port, simplex and tone-free channels only",
+        "sub-audible below 300 Hz through a 9600 data port, simplex and tone-free channels only, "
+        "which ignores --shape",
     )
 
 
@@ -128,13 +159,14 @@ def _add_tuning(p: argparse.ArgumentParser, level: bool = True) -> None:
             "--level",
             type=float,
             default=LEVEL_DB,
-            help=f"data level in dB relative to the speech (default {LEVEL_DB})",
+            help=f"data level in dB relative to the speech, or to full scale in sub mode "
+            f"(default {LEVEL_DB})",
         )
         p.add_argument(
             "--pause-level",
             type=float,
-            help="keep the data going through pauses at this many dB (negative) below the "
-            "recent speech, instead of stopping",
+            help="keep the data going through pauses at this many dB below the recent speech, "
+            "instead of stopping; no higher than --level, and ignored in sub mode",
         )
     p.add_argument(
         "--shape",
@@ -199,7 +231,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--pause-level",
         type=float,
-        help="keep data going through pauses at this many dB (negative) below recent speech",
+        help="keep data going through pauses at this many dB below recent speech, no higher "
+        "than the lowest of --levels",
     )
     _add_tuning(p, level=False)
 
@@ -231,7 +264,9 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--cw-id",
         action="store_true",
-        help="end an over with your callsign in Morse when 10 minutes have passed since the last",
+        help="send your callsign in Morse before unkeying: at the end of a --play recording; "
+        "with the mic, at the end of the first over and of any that ends 9 minutes or more "
+        "after the last ID (without --ptt the whole run is one over)",
     )
 
     p = sub.add_parser("rx", help="listen on a sound card and print frames")
@@ -250,6 +285,12 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--save", metavar="CSV", help="append the answers to this results file")
     p.add_argument("--export", metavar="FOLDER", help="write the clips and answer key instead")
     p.add_argument("--score", nargs="+", metavar="CSV", help="report on saved results instead")
+    p.add_argument(
+        "--pause-level",
+        type=float,
+        help="keep the data going through pauses at this many dB below the recent speech, no "
+        "higher than the lowest of --levels",
+    )
     _add_tuning(p, level=False)
 
     p = sub.add_parser("check", help="test the microphone, and optionally PTT, before going on air")
@@ -272,7 +313,9 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    _check_pause(parser, args)
     try:
         return _run(args)
     except SetupError as e:
@@ -283,12 +326,12 @@ def main(argv: list[str] | None = None) -> int:
 
 def _run(args: argparse.Namespace) -> int:
     if args.command == "encode":
-        recording = read_wav(args.input)
+        recording = _read(args.input)
         message = _message(args)
         mixed = encode(args.mode, recording, message, args.level, args.shape, args.pause_level)
         write_wav(args.output, mixed)
     elif args.command == "decode":
-        frames = decode(args.mode, read_wav(args.input), args.shape)
+        frames = decode(args.mode, _read(args.input), args.shape)
         for f in frames:
             print(f"{f.start / RATE:8.2f} s  {f.message}  (snr {f.snr_db:.1f} dB)")
         if not frames:
@@ -296,11 +339,11 @@ def _run(args: argparse.Namespace) -> int:
             return 1
     elif args.command == "channel":
         rng = np.random.default_rng(args.seed)
-        audio = read_wav(args.input)
+        audio = _read(args.input)
         out = fm_channel(audio, args.snr, args.drive, args.hops, args.ppm, rng, path=args.path)
         write_wav(args.output, out)
     elif args.command == "sweep":
-        speech = [read_wav(path) for path in _paths(args.speech)]
+        speech = [_read(path) for path in _paths(args.speech)]
         message = Message("N0CALL", "FN31pr", "SWEEP TEST 0123456789 ABCDEFGHIJ")
         print(f"shape {args.shape}, snr {args.snr} dB, hops {args.hops}, ppm {args.ppm}")
         print("level_db  frames  received  loss_pct  loss_95_upper_pct  wrong")
@@ -325,7 +368,7 @@ def _run(args: argparse.Namespace) -> int:
         message = _message(args)
         with _keyer(args) as ptt:
             if args.play:
-                recording = read_wav(args.play)
+                recording = _read(args.play)
                 print(f"playing {len(recording) / RATE:.1f} s with {message}")
                 _live.play(
                     recording,

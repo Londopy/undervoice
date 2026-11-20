@@ -25,7 +25,8 @@ class Modulator:
     Output lags input by one 20 ms hop.
 
     With pause_db set, the data carries on through pauses at pause_db below the recent speech
-    level instead of stopping, trading a faint hiss in the gaps for frames that survive them."""
+    level instead of stopping, trading a faint hiss in the gaps for frames that survive them.
+    It can't be above level_db, or the data would rise whenever the speech got quieter."""
 
     def __init__(
         self,
@@ -36,6 +37,10 @@ class Modulator:
     ):
         if not 0.0 <= shape < 1.0:
             raise ValueError(f"shape must be from 0 up to (not including) 1, got {shape}")
+        if pause_db is not None and pause_db > level_db:
+            raise ValueError(
+                f"the pause level ({pause_db:g} dB) can't be above the data level ({level_db:g} dB)"
+            )
         self.wave = frame_wave(encode_bits(pack(message)))
         self.ratio = 10 ** (level_db / 20)
         self.pause_ratio = 0.0 if pause_db is None else 10 ** (pause_db / 20)
