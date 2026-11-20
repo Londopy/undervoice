@@ -11,6 +11,7 @@ from scipy.signal import resample_poly
 from undervoice import Message, read_wav
 from undervoice._check import MicCheck, advise, finish, key_briefly
 from undervoice._live import BLOCK
+from undervoice._ptt import SetupError
 from undervoice._waveform import RATE
 
 SPEECH = Path(__file__).parent.parent / "speech" / "OSR_us_000_0010_8k.wav"
@@ -36,15 +37,23 @@ def test_a_mic_recording_with_data_mixed_in_decodes(mode):
 
 
 class FakeMic:
+    """Feeds `seconds` of a steady level into the callback, then stops like a card that went
+    away."""
+
+    seconds = 3
+
     def __init__(self, rate, blocksize, device, channels, callback):
         self.callback = callback
+        self.active = False
 
     def start(self):
-        audio = resample_poly(np.full(RATE * 3, 0.25), 6, 1)
+        audio = resample_poly(np.full(RATE * self.seconds, 0.25), 6, 1)
+        self.active = True
 
         def feed():
             for i in range(0, len(audio) - BLOCK, BLOCK):
                 self.callback(audio[i : i + BLOCK, None], BLOCK, None, None)
+            self.active = False
 
         threading.Thread(target=feed, daemon=True).start()
 
@@ -66,6 +75,19 @@ def test_mic_check_records_the_requested_length(monkeypatch):
     audio = check.audio()
     assert len(audio) == 2 * RATE
     assert check.peak > 0.2
+
+
+def test_mic_check_ends_with_an_error_when_the_card_stops(monkeypatch):
+    module = types.SimpleNamespace(InputStream=FakeMic, PortAudioError=OSError)
+    monkeypatch.setitem(sys.modules, "sounddevice", module)
+    monkeypatch.setattr(FakeMic, "seconds", 1)
+    check = MicCheck(None, seconds=2.0)
+    deadline = time.monotonic() + 5
+    while not check.done and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert check.done
+    with pytest.raises(SetupError, match="stopped after 1.0 s of the 2 s"):
+        check.audio()
 
 
 class FakeKeyer:

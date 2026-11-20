@@ -16,7 +16,7 @@ from typing import Any
 from . import _config, _updater
 from ._audio import read_wav
 from ._check import MicCheck, MicResult, finish, key_briefly, play_back
-from ._cwid import ID_EVERY
+from ._cwid import ID_EVERY, due
 from ._modes import SUB, VOICE
 from ._live import Listener, Transmitter, cards, play, stop_playing
 from ._message import Message
@@ -84,6 +84,15 @@ def _dark_title_bar(root: tk.Tk | tk.Toplevel) -> None:
     ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(on), ctypes.sizeof(on))
 
 
+def _close(tx: Transmitter | None, ptt: Keyer | None, identify: bool = False) -> bool:
+    """Close the transmitter, then the keyer even if unkeying failed. True if a CW ID went out."""
+    try:
+        return tx is not None and tx.close(identify)
+    finally:
+        if ptt:
+            ptt.close()
+
+
 def _icon(accent: str) -> tk.PhotoImage:
     # a speech waveform with a thin steady data line under it
     img = tk.PhotoImage(width=32, height=32)
@@ -109,9 +118,15 @@ class App:
         self.identifying = False
         self.mic_check: MicCheck | None = None
         self.testing_ptt = False
-        # monotonic times for station ID: the last CW ID or reminder, and the last over's end
+        # whichever thread is holding the radio for the CW ID, the PTT test or a recording
+        self.helper: threading.Thread | None = None
+        # monotonic times for station ID: the last CW ID sent, the last reminder to identify,
+        # and the last over's end
         self.last_id: float | None = None
+        self.reminded: float | None = None
         self.last_over: float | None = None
+        # set when the user stops a recording, which cuts off the CW ID at its end
+        self.recording_cut = False
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.record_path: str | None = None
         self.settings_path = settings_path or _config.folder() / "config.toml"
@@ -289,11 +304,12 @@ class App:
         pauses.configure(state="readonly")
         self._field(tuning, "In pauses (dB)", pauses, 0, 3)
         self.cw_id = tk.BooleanVar(value=False)
-        ttk.Checkbutton(tuning, text="CW ID every 10 minutes", variable=self.cw_id).grid(
+        ttk.Checkbutton(tuning, text="CW ID before unkeying, when due", variable=self.cw_id).grid(
             row=1, column=4, sticky="w", padx=(4, 0), pady=(2, 6)
         )
         self.mode = ttk.Combobox(tuning, values=list(MODE_NAMES.values()), state="readonly")
         self.mode.set(MODE_NAMES[VOICE])
+        self.mode.bind("<<ComboboxSelected>>", lambda e: self._mode_changed())
         self._field(tuning, "Mode", self.mode, 0, 5)
 
         actions = ttk.Frame(f)
@@ -578,6 +594,12 @@ class App:
         if not 0 <= delay <= 5:
             self.say("TX delay must be between 0 and 5 seconds.", error=True)
             return None
+        if pause is not None and pause > level and self._mode() == VOICE:
+            self.say(
+                f"In pauses ({pause:g} dB) can't be above the data level ({level:g} dB).",
+                error=True,
+            )
+            return None
         return level, shape, delay, pause
 
     def _index(self, box: ttk.Combobox, devices: list[tuple[int, str]]) -> int | None:
@@ -590,6 +612,11 @@ class App:
         how = next((h for label, h in self.keyers if label == self.ptt_box.get()), None)
         return None if how is None else open_keyer(how)
 
+    def _busy(self) -> bool:
+        # keying while the CW ID or the PTT test holds the radio would open a second keyer that
+        # the first then unkeys, and a mic check holds the microphone a transmitter would use
+        return self.identifying or self.testing_ptt or self.mic_check is not None
+
     def _show_state(self) -> None:
         c = self.c
         if self.identifying:
@@ -601,7 +628,7 @@ class App:
         else:
             text, color = "Idle", c["muted"]
         self.state.configure(text=text, foreground=color)
-        ready = self.message_ok and bool(self.outputs) and not self.identifying
+        ready = self.message_ok and bool(self.outputs) and not self._busy()
         self.tx_button.configure(text="Stop" if self.tx else "Transmit")
         self.tx_button.state(
             ["!disabled"] if (ready and not self.sending) or self.tx else ["disabled"]
@@ -643,6 +670,8 @@ class App:
         if self.tx:
             self.stop_sending()
             return
+        if self.sending or self._busy():
+            return
         message, numbers = self._message(), self._numbers()
         if message is None or numbers is None:
             return
@@ -661,9 +690,9 @@ class App:
                 self._mode(),
             )
             self.tx.key()
-        except SetupError as e:
-            self._release_ptt()
+        except (SetupError, OSError) as e:
             self.say(str(e), error=True)
+            self._release()
             return
         self._save_settings()
         how = f"keyed by {self.ptt.name}" if self.ptt else "key the radio yourself"
@@ -672,7 +701,9 @@ class App:
 
     def toggle_recording(self) -> None:
         if self.sending:
-            stop_playing()
+            self._stop_recording()
+            return
+        if self.tx or self._busy():
             return
         message, numbers = self._message(), self._numbers()
         if message is None or numbers is None:
@@ -696,72 +727,86 @@ class App:
         out = self._index(self.to_radio, self.outputs)
         ptt = self.ptt
         identify = self._id_due()
-        if identify:
-            self.last_id = time.monotonic()
         mode = self._mode()
 
         def work() -> None:
+            ended_with_id = False
             try:
                 play(speech, message, level, shape, out, ptt, delay, pause, identify, mode)
-            except SetupError as e:
+                ended_with_id = identify
+            except (SetupError, OSError) as e:
                 self.events.put(("error", str(e)))
             finally:
-                self.events.put(("sent", path))
+                self.events.put(("sent", ended_with_id))
 
         self.sending = True
-        threading.Thread(target=work, daemon=True).start()
+        self.recording_cut = False
+        self.helper = threading.Thread(target=work, daemon=True)
+        self.helper.start()
         self.say(f"Sending {path} ({len(speech) / RATE:.0f} s) with {message}.")
         self._show_state()
 
+    def _stop_recording(self) -> None:
+        self.recording_cut = True
+        stop_playing()
+
     def _id_due(self) -> bool:
-        if not self.cw_id.get():
-            return False
-        return self.last_id is None or time.monotonic() - self.last_id >= ID_EVERY
+        return self.cw_id.get() and due(self.last_id)
 
     def stop_sending(self) -> None:
         self.held = False
         if self.tx:
-            tx, ptt = self.tx, self.ptt
-            self.tx, self.ptt = None, None
             self.last_over = time.monotonic()
             if self._id_due():
-                self.last_id = self.last_over
+                tx, ptt = self.tx, self.ptt
+                self.tx, self.ptt = None, None
                 self.identifying = True
                 self.say("Sending your callsign in Morse before unkeying.")
-
-                def work() -> None:
-                    tx.close(identify=True)
-                    if ptt:
-                        ptt.close()
-                    self.events.put(("identified", None))
-
-                threading.Thread(target=work, daemon=True).start()
-            else:
-                tx.close()
-                if ptt:
-                    ptt.close()
+                self.helper = threading.Thread(target=self._identify, args=(tx, ptt), daemon=True)
+                self.helper.start()
+            elif self._release():
                 self.say("Stopped transmitting.")
         if self.sending:
-            stop_playing()
+            self._stop_recording()
         self._show_state()
 
+    def _identify(self, tx: Transmitter, ptt: Keyer | None) -> None:
+        sent, error = False, None
+        try:
+            sent = _close(tx, ptt, identify=True)
+        except (SetupError, OSError) as e:
+            error = str(e)
+        finally:
+            self.events.put(("identified", (sent, error)))
+
     def _remind_id(self) -> None:
-        # without CW ID, a nudge every 10 minutes while the station is in use (97.119)
-        if self.cw_id.get() or (self.last_over is None and not self.tx):
+        if self.identifying:
             return
         now = time.monotonic()
-        if self.last_id is None:
-            self.last_id = now
-            return
+        on_air = self.tx is not None or self.sending
         recent = self.last_over is not None and now - self.last_over < ID_EVERY
-        if (self.tx or self.sending or recent) and now - self.last_id >= ID_EVERY:
-            self.last_id = now
-            self.say("10 minutes since your last ID: say your callsign.", error=True)
+        # 97.119: with CW ID on, an ID goes out as each over that needs one ends, so only an
+        # over running past the time needs a nudge; without it, the whole QSO does
+        if not on_air and (self.cw_id.get() or not recent):
+            return
+        if self.reminded is None:
+            # reminders count from the last ID, or from when the station is first in use
+            self.reminded = self.last_id or now
+        if due(max(self.reminded, self.last_id or 0.0)):
+            self.reminded = now
+            stop = ", or stop to send the CW ID" if self.cw_id.get() else ""
+            self.say(f"Time to identify: say your callsign{stop}.", error=True)
 
-    def _release_ptt(self) -> None:
-        if self.ptt:
-            self.ptt.close()
-            self.ptt = None
+    def _release(self) -> bool:
+        """Close the transmitter and PTT now. False, with the reason shown, if unkeying failed."""
+        tx, ptt = self.tx, self.ptt
+        self.tx, self.ptt = None, None
+        try:
+            _close(tx, ptt)
+        except (SetupError, OSError) as e:
+            self.say(f"Could not unkey the radio: {e}", error=True)
+            return False
+        return True
 
     def _choose_record(self) -> None:
         if not self.record.get():
@@ -782,6 +827,13 @@ class App:
 
     def _listen_on_open(self) -> None:
         if not self.listener:
+            self.toggle_rx()
+
+    def _mode_changed(self) -> None:
+        if self.listener:
+            # a listener decodes one mode only, so listen again in the new one
+            self.listener.stop()
+            self.listener = None
             self.toggle_rx()
 
     def toggle_rx(self) -> None:
@@ -856,7 +908,10 @@ class App:
             self.say(str(detail), error=True)
         elif kind == "sent":
             self.sending = False
-            self._release_ptt()
+            self.last_over = time.monotonic()
+            if detail and not self.recording_cut:
+                self.last_id = self.last_over
+            self._release()
             self._show_state()
         elif kind == "update":
             release, manual = detail
@@ -877,9 +932,15 @@ class App:
             self.testing_ptt = False
             self.ptt_button.state(["!disabled"])
             self.say(detail, error=detail.startswith("PTT test failed"))
+            self._show_state()
         elif kind == "identified":
+            sent, error = detail
             self.identifying = False
-            self.say("Sent your callsign in Morse and unkeyed.")
+            if error:
+                self.say(f"Could not unkey the radio: {error}", error=True)
+            elif sent:
+                self.last_id = time.monotonic()
+                self.say("Sent your callsign in Morse and unkeyed.")
             self._show_state()
 
     def test_microphone(self) -> None:
@@ -895,6 +956,11 @@ class App:
             return
         self.mic_button.state(["disabled"])
         self.say("Recording: talk normally until the countdown ends.")
+        self._show_state()
+
+    def _mic_ready(self) -> None:
+        self.mic_button.configure(text="Test microphone")
+        self.mic_button.state(["!disabled"])
 
     def _watch_mic_check(self) -> None:
         check = self.mic_check
@@ -904,12 +970,17 @@ class App:
             self.mic_button.configure(text=f"Recording {check.left:.0f} s")
             return
         self.mic_check = None
+        self._show_state()
         self.mic_button.configure(text="Checking...")
-        audio = check.audio()
+        try:
+            audio = check.audio()
+        except SetupError as e:
+            self._mic_ready()
+            self.say(str(e), error=True)
+            return
         message, numbers = self._message(), self._numbers()
         if message is None or numbers is None:
-            self.mic_button.configure(text="Test microphone")
-            self.mic_button.state(["!disabled"])
+            self._mic_ready()
             return
         level, shape, _, pause = numbers
         mode = self._mode()
@@ -920,8 +991,7 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _show_mic_check(self, result: MicResult) -> None:
-        self.mic_button.configure(text="Test microphone")
-        self.mic_button.state(["!disabled"])
+        self._mic_ready()
         decoded = (
             "the data decoded"
             if result.frames
@@ -938,7 +1008,7 @@ class App:
             self.say(f"Can't play it back: {e}", error=True)
 
     def test_ptt(self) -> None:
-        if self.testing_ptt or self.tx or self.sending:
+        if self.tx or self.sending or self._busy():
             return
         try:
             keyer = self._open_ptt()
@@ -951,18 +1021,22 @@ class App:
         self.testing_ptt = True
         self.ptt_button.state(["disabled"])
         self.say(f"Keying the radio for 2 s through {keyer.name}.")
+        self._show_state()
 
         def work() -> None:
+            outcome = "PTT test failed"
             try:
-                key_briefly(keyer)
+                # leaving the with block unkeys again and lets the interface go
+                with keyer:
+                    key_briefly(keyer)
                 outcome = f"PTT works through {keyer.name}: the radio should have transmitted."
             except (SetupError, OSError) as e:
                 outcome = f"PTT test failed: {e}"
             finally:
-                keyer.close()
-            self.events.put(("ptt-tested", outcome))
+                self.events.put(("ptt-tested", outcome))
 
-        threading.Thread(target=work, daemon=True).start()
+        self.helper = threading.Thread(target=work, daemon=True)
+        self.helper.start()
 
     def _draw_meter(self, peak: float | None) -> None:
         self.meter.delete("all")
@@ -978,9 +1052,14 @@ class App:
     def close(self) -> None:
         self._save_settings()
         self.stop_sending()
+        if self.helper:
+            # it holds PTT until the CW ID, PTT test or recording is over, and quitting first
+            # could leave the radio keyed; the longest callsign takes 13.5 s in Morse
+            self.root.update_idletasks()
+            self.helper.join(timeout=15)
         if self.listener:
             self.listener.stop()
-        self._release_ptt()
+        self._release()
         self.root.destroy()
 
 
