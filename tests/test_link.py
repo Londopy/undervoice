@@ -74,3 +74,29 @@ def test_cli_encode_then_decode(speech, tmp_path, capsys):
     assert main(["encode", str(SPEECH), str(mixed), *args]) == 0
     assert main(["decode", str(mixed)]) == 0
     assert capsys.readouterr().out.count("W1AW FN31pr CLI TEST") == len(speech) // FRAME
+
+
+def test_pause_level_keeps_data_in_the_gaps(speech):
+    clip = speech[: 10 * RATE]
+    hop = 160
+    levels = np.array([np.sqrt(np.mean(clip[i : i + hop] ** 2)) for i in range(0, len(clip), hop)])
+    # the gaps between sentences: 30 dB or more below the loudest speech
+    quiet = np.repeat(levels < 0.03 * levels.max(), hop)[: len(clip)]
+    assert quiet.sum() > RATE // 2
+
+    def rms(x):
+        return np.sqrt(np.mean(x**2))
+
+    plain = encode(clip, MSG) - clip
+    floored = encode(clip, MSG, pause_db=-30.0) - clip
+    # without the floor the data drops with the speech in the gaps (here only riding on the
+    # recording's background noise); with it, it carries on at the floor
+    assert rms(floored[quiet]) > 3 * rms(plain[quiet])
+    # while speech is going the floor changes nothing
+    loud = ~quiet
+    np.testing.assert_allclose(rms(floored[loud]), rms(plain[loud]), rtol=0.2)
+
+
+def test_pause_level_still_decodes(speech):
+    frames = decode(encode(speech, MSG, pause_db=-40.0))
+    assert [f.message for f in frames] == [MSG] * (len(speech) // FRAME)

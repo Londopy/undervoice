@@ -12,6 +12,8 @@ from ._waveform import FRAME, frame_wave
 
 LEVEL_DB = -18.0
 SHAPE = 0.5
+# how fast the remembered speech level falls during a pause: about 4 dB in ten seconds
+RECENT_FADE = 0.999
 
 
 def _rms(x: np.ndarray) -> float:
@@ -20,13 +22,24 @@ def _rms(x: np.ndarray) -> float:
 
 class Modulator:
     """Adds data to speech, shaped like it and level_db below it, block by block.
-    Output lags input by one 20 ms hop."""
+    Output lags input by one 20 ms hop.
 
-    def __init__(self, message: Message, level_db: float = LEVEL_DB, shape: float = SHAPE):
+    With pause_db set, the data carries on through pauses at pause_db below the recent speech
+    level instead of stopping, trading a faint hiss in the gaps for frames that survive them."""
+
+    def __init__(
+        self,
+        message: Message,
+        level_db: float = LEVEL_DB,
+        shape: float = SHAPE,
+        pause_db: float | None = None,
+    ):
         if not 0.0 <= shape < 1.0:
             raise ValueError(f"shape must be from 0 up to (not including) 1, got {shape}")
         self.wave = frame_wave(encode_bits(pack(message)))
         self.ratio = 10 ** (level_db / 20)
+        self.pause_ratio = 0.0 if pause_db is None else 10 ** (pause_db / 20)
+        self.recent = 0.0
         self.shape = shape
         self.pos = 0
         self.previous = np.zeros(HOP)
@@ -57,15 +70,22 @@ class Modulator:
         data = self.wave[self.pos : self.pos + HOP]
         self.pos = (self.pos + HOP) % FRAME
         shaped, self.zi = lfilter([1.0], bandwidth(a, self.shape), data, zi=self.zi)
-        gain = self.ratio * _rms(speech) / max(_rms(shaped), 1e-12)
+        level = _rms(speech)
+        self.recent = max(level, self.recent * RECENT_FADE)
+        target = max(self.ratio * level, self.pause_ratio * self.recent)
+        gain = target / max(_rms(shaped), 1e-12)
         ramp = np.linspace(self.gain, gain, HOP, endpoint=False)
         self.gain = gain
         return speech + ramp * shaped
 
 
 def encode(
-    speech: np.ndarray, message: Message, level_db: float = LEVEL_DB, shape: float = SHAPE
+    speech: np.ndarray,
+    message: Message,
+    level_db: float = LEVEL_DB,
+    shape: float = SHAPE,
+    pause_db: float | None = None,
 ) -> np.ndarray:
     """Mix repeating frames of message under a whole recording. Frames start at sample 0."""
-    mod = Modulator(message, level_db, shape)
+    mod = Modulator(message, level_db, shape, pause_db)
     return mod.process(np.concatenate([speech, np.zeros(HOP)]))[HOP:]
