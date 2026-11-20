@@ -4,6 +4,14 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- `undervoice abx`: a blind ABX listening test, with results saved to CSV, combined across listeners and scored per level, or the clips exported for playing another way.
+- `--pause-level` and **In pauses** in the window keep the data going through pauses at a set level below the recent speech, so frames survive pauses on noisy paths. Off by default.
+- `--cw-id` and **CW ID every 10 minutes** in the window end an over with your callsign in Morse when 10 minutes have passed since the last ID. Without it the window reminds you to identify every 10 minutes while you transmit.
+- `sweep` prints a 95% upper bound on the frame loss rate, and a slow test (`pytest -m slow`, run weekly in CI) shows the under-1% target over 480 frames.
+- README sections on design choices, prior art and the listening test.
+
 ## [0.4.0] - 2026-11-19
 
 ### Added

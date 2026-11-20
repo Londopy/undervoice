@@ -205,10 +205,20 @@ itself. A copy installed with pip says so and leaves the update to
 
 ## Results so far
 
-Frame loss through the simulated channel, four Harvard-sentence recordings, each sent three
-times from random start points (36 frames per cell). "40 dB" means a full-deviation 1 kHz tone
-is 40 dB above the noise at the receiver, which leaves speech about 22 dB above it; at 30 dB the
-hiss is plainly audible. Not one frame in any run decoded to the wrong message.
+All of these are measured through the simulated FM channel (`undervoice sweep`), not on the
+air. "40 dB" means a full-deviation 1 kHz tone is 40 dB above the noise at the receiver, which
+leaves these recordings' speech about 22 dB above it; at "30 dB" the speech is about 12 dB above
+the noise. Not one frame in any run decoded to the wrong message.
+
+**The spec's target, under 1% frame loss on a clean simplex path:** at the defaults (`--level
+-18 --shape 0.5`, 40 dB, simplex), 480 frames out of 480 came through. That rules out a loss
+rate above 0.62% with 95% confidence (one-sided Clopper-Pearson, which `sweep` prints as
+`loss_95_upper_pct`). `pytest -m slow` repeats this measurement, and the Targets workflow runs
+it weekly.
+
+The tables below are smaller runs (36 frames per cell, four recordings sent three times each
+from random start points), good for comparing settings but too small on their own to show a
+rate under 1%.
 
 `--shape 0.5` (the default):
 
@@ -234,6 +244,22 @@ With `--shape 0.9` the data follows the speech spectrum closely and needs about 
 a clean 40 dB path. The default, shape 0.5 at -18 dB, keeps a 3 dB margin on a good simplex or
 repeater path and sits between the two in how much it should stand out. Whether any of these
 can be heard is what the listening test has to answer.
+
+**Pauses.** The data follows the speech level, so it stops when you stop talking, and a frame
+that spans a long pause loses those symbols. `--pause-level` (or **In pauses** in the window)
+keeps it going through pauses at that many dB below the recent speech instead. On the noisy
+30 dB path, 96 frames per cell:
+
+| `--pause-level` | at -21 dB | at -18 dB |
+|---|---|---|
+| off (default) | 74% lost | 27% lost |
+| -40 | 21% | 12.5% |
+| -34 | 3% | 0% |
+| -28 | 0% | 0% |
+
+It is off by default because during a pause there is no speech to hide the data, so how high
+it can go before listeners hear it is for the listening test to settle. On a clean path it
+makes no difference, since frames already come through.
 
 Over a real sound card (a VB-Audio virtual cable from `tx --play` to `rx`) every frame came
 through.
@@ -302,6 +328,63 @@ closely.
 5. De-interleave, Viterbi-decode, and keep the frame only if the CRC, version and every field
    check out.
 
+## Design choices
+
+**Long frames with pilots, not short frames with a sync word.** The original plan called for
+short frames with a sync word, because speech and squelch cut in and out. Hidden under speech
+the channel carries about 60 coded bits a second, so the 34-byte payload with its error
+correction needs about 9 seconds however it is cut up; short frames would mean splitting the
+callsign, grid and status across several frames, each with its own sync and CRC overhead.
+Instead one frame carries everything, and the job a sync word would do is spread through it:
+every fourth symbol is a known pilot, and the receiver finds the frame from all twelve blocks
+of pilots together. A single sync word at the start would be lost whenever an over began with a
+pause or under the squelch tail; the pilots still find the frame as long as enough of it was
+spoken. Dropouts inside the frame are handled by the interleaver, which spreads a burst of lost
+symbols thinly across the code, and by starting a fresh frame with each over.
+
+## Prior art
+
+- **CTCSS and DCS.** Squelch tones and digital coded squelch (a fixed 23-bit code at 134.4
+  bit/s) already ride under FM voice below 300 Hz. They prove a sub-audible channel works
+  through radios, but they repeat a fixed code rather than carry messages, and many repeaters
+  strip or regenerate them.
+- **MDC-1200 and similar signalling.** Commercial radios send a short 1200 bit/s AFSK burst
+  with the radio's ID at the start or end of a transmission. It carries data but is audible
+  and sits outside the speech rather than under it.
+- **APRS.** Position and status in separate 1200 baud AX.25 packets, usually on their own
+  frequency, never during speech.
+- **Digital voice (D-STAR, DMR, System Fusion).** These carry slow data alongside voice, but the
+  voice itself is digital; analog FM receivers cannot hear the QSO at all.
+- **Audio watermarking.** Spread-spectrum watermarks, shaped by the audio's own spectrum so
+  they stay below what listeners notice, are the closest relative of undervoice's in-band
+  mode; the difference here is a channel with FM's emphasis, limiting and noise, and a
+  payload decoded live rather than checked against a known mark.
+
+## The listening test
+
+The spec's first target is that listeners cannot reliably tell speech with data from speech
+without it in a blind test. `undervoice abx` runs that test:
+
+```powershell
+undervoice abx speech/*.wav --save results.csv
+```
+
+Each trial plays A and B, one with data and one without, both through the same simulated FM
+link with identical noise and gain so the data is the only difference, and X, which is one of
+them. Play each as often as you like (`a`, `b`, `x`), then answer `1` if X is A or `2` if X is
+B; `q` stops early. Trials at every level (`--levels`, default -24, -18 and -12 dB) are
+shuffled together and the level is never shown. At the end it prints, per level, how many
+answers were right and the chance of doing that well by guessing; a level is "heard" when that
+chance is under 5% over at least 8 answers.
+
+- `--save results.csv` appends the answers, so several people can add to one file;
+  `undervoice abx --score results.csv` reports on all of them. Keep one file per `--shape`
+  and `--snr`, since the file does not record them.
+- `--export FOLDER` writes the clips as WAVs with an answer key, to play to a listener another
+  way.
+- Use headphones, and your own recordings of real QSO audio if you have them; the WAVs in
+  `speech/` are in the source repository, not in the pip package.
+
 ## Testing on the air
 
 **Simplex first**, at low power on a quiet 2 m or 70 cm simplex frequency, with your callsign
@@ -349,8 +432,12 @@ the rules, not legal advice; check with ARRL or the FCC before relying on it.
   meaning. The data is unencrypted, the format and code are public, and every frame carries
   the callsign in clear. Inaudible is not the same as obscured, but this is the point a
   skeptical reader is most likely to raise, so lead with the published format.
-- **Identify by voice as usual.** 97.119 requires your callsign every 10 minutes and at the
-  end, by CW or phone. Nothing in it lets the callsign in the data count as identification.
+- **Identify as usual.** 97.119 requires your callsign every 10 minutes and at the end, by CW
+  or phone. Nothing in it lets the callsign in the data count as identification. undervoice can
+  help: with `--cw-id` (or **CW ID every 10 minutes** in the window), an over that ends 10
+  minutes or more after the last ID ends with your callsign in Morse at 20 wpm before PTT
+  drops, which 97.119(b)(1) accepts. Without it, the window reminds you every 10 minutes while
+  you are transmitting. Either way, still give your callsign at the end of the QSO.
 - **Repeaters.** 97.205(g) says the control operator of a repeater that inadvertently
   retransmits something that breaks the rules is not accountable for it, but the repeater's
   licensee can still limit who and what uses it (97.205(e)). Ask first.
@@ -361,14 +448,18 @@ care as any other text under 97.113 (no business, no obscenity).
 
 ## Known gaps
 
-- Silence carries no data, so a frame that spans long pauses can be lost. A minimum level
-  during pauses would fix this at the cost of being audible.
-- The listening test is published but has no answers yet; the simplex and repeater tests have
-  not been done.
-- Without `--ptt`, `tx` starts frames when it starts and runs them back to back, so a frame cut
-  off by unkeying is lost. With `--ptt` each transmission starts a fresh frame.
-- PTT keying (CM108, serial, rigctld), the Windows installers and the updater are tested in
-  CI and against fakes of the hardware, not yet against a real interface or radio.
+Everything above was measured in simulation or over a sound card loopback. What only people
+and radios can settle:
+
+- **Can listeners hear it?** The blind listening test has not been run with people yet. The
+  test kit ships with undervoice (`undervoice abx`, above); until results are in, the default
+  level is a guess backed only by the decode margins above, and **In pauses** stays off.
+- **Radio to radio and through a repeater.** Not done yet. Real radios' audio filters,
+  limiters and repeaters' processing may differ from the simulator.
+- **Hardware.** PTT keying (CM108, serial, rigctld), the Windows installers and the updater
+  are tested in CI and against fakes of the hardware, not yet against a real interface.
+- **Pauses.** With **In pauses** off, a frame spanning long pauses can be lost on a noisy
+  path (see Results).
 
 ## Building from source
 
