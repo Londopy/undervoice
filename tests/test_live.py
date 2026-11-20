@@ -1,3 +1,4 @@
+import queue
 import sys
 import threading
 import time
@@ -15,6 +16,8 @@ from undervoice._live import BLOCK, Listener
 
 SPEECH = Path(__file__).parent.parent / "speech" / "OSR_us_000_0010_8k.wav"
 MSG = Message("W1AW", "FN31pr", "FAKE CARD TEST")
+# window settings for tests: no update checks and no listening until a test asks
+QUIET = "[updater]\nenabled = false\n\n[receive]\nalways = false\n"
 
 
 class FakeInput:
@@ -120,7 +123,7 @@ def window(fake_sd, monkeypatch, tmp_path, tk_root):
     top = tk.Toplevel(tk_root)
     top.withdraw()
     path = tmp_path / "config.toml"
-    path.write_text("[updater]\nenabled = false\n", encoding="utf-8")
+    path.write_text(QUIET, encoding="utf-8")
     yield lambda: App(top, path), path
     if top.winfo_exists():
         top.destroy()
@@ -152,6 +155,7 @@ def test_window_remembers_settings(window):
     assert saved["station"]["call"] == "W1AW"
     assert saved["radio"]["mic"] == "USB Audio Device"
     assert saved["updater"]["enabled"] is False
+    assert saved["receive"]["always"] is False
 
 
 def test_holding_space_transmits_until_it_is_released(window):
@@ -178,3 +182,33 @@ def test_space_does_nothing_without_a_valid_station(window):
     app = make()
     app._space_down(None)
     assert app.tx is None
+
+
+class IdleListener:
+    def __init__(self, shape, src, record):
+        self.src = src
+        self.running = True
+        self.peak = 0.0
+        self.heard = queue.Queue()
+        self.notes = queue.Queue()
+
+    def stop(self):
+        self.running = False
+
+
+def test_window_listens_as_soon_as_it_opens(window, monkeypatch):
+    import undervoice._gui as gui
+
+    make, path = window
+    path.write_text(QUIET.replace("always = false", "always = true"), encoding="utf-8")
+    monkeypatch.setattr(gui, "Listener", IdleListener)
+    app = make()
+    assert app.listen_always.get()
+    deadline = time.monotonic() + 3
+    while app.listener is None and time.monotonic() < deadline:
+        app.root.update()
+        time.sleep(0.05)
+    assert app.listener is not None
+    # the USB interface, which the window picks for audio from the radio
+    assert app.listener.src == 1
+    assert app.rx_button.cget("text") == "Stop listening"

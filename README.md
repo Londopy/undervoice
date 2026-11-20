@@ -124,10 +124,11 @@ grid and status, pick the microphone, the sound card going to the radio and the 
 from it, and the PTT interface if you have one. **Transmit** keys the radio (through PTT, or
 you key it yourself) and mixes the data into your microphone audio until you press it again
 or hit Esc. Or hold **Space** to talk and let go to stop, like a PTT button (buttons take Enter
-instead of Space in this window). **Send a recording...** does the same with a WAV file. **Listen** fills
-the Heard table with each frame as it decodes, newest first, shows the input level so you can
-set the radio's volume, and can record the session to a file. The window follows Windows'
-light or dark setting.
+instead of Space in this window). **Send a recording...** does the same with a WAV file. The window starts
+listening as soon as it opens (untick **Listen whenever undervoice is open** to start it by
+hand with **Listen**) and fills the Received table with each frame as it decodes, newest
+first. It shows the input level so you can set the radio's volume, and can record the session
+to a file. The window follows Windows' light or dark setting.
 
 ### Keying the radio
 

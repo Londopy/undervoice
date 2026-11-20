@@ -152,6 +152,9 @@ class App:
             self.say("Ready.")
         else:
             self.say("Fill in your station and pick the sound cards.")
+        if self.listen_always.get() and self.inputs and not setup_problem:
+            # after the window is drawn, so a sound card error shows up in the status bar
+            root.after(300, self._listen_on_open)
         root.after(100, self._poll)
 
     def _style(self) -> None:
@@ -289,10 +292,17 @@ class App:
         f.rowconfigure(1, weight=1)
         self.rx_button = ttk.Button(f, text="Listen", width=18, command=self.toggle_rx)
         self.rx_button.grid(row=0, column=0, sticky="w", pady=(0, 6))
+        options = ttk.Frame(f)
+        options.grid(row=0, column=1, sticky="w", padx=(10, 0), pady=(0, 6))
+        always = bool(self.settings["receive"]["always"])
+        self.listen_always = tk.BooleanVar(value=always)
+        ttk.Checkbutton(
+            options, text="Listen whenever undervoice is open", variable=self.listen_always
+        ).grid(row=0, column=0, sticky="w")
         self.record = tk.BooleanVar(value=False)
         ttk.Checkbutton(
-            f, text="Record to file", variable=self.record, command=self._choose_record
-        ).grid(row=0, column=1, sticky="w", padx=(10, 0), pady=(0, 6))
+            options, text="Record to file", variable=self.record, command=self._choose_record
+        ).grid(row=0, column=1, sticky="w", padx=(10, 0))
         meter = ttk.Frame(f)
         meter.grid(row=0, column=2, sticky="e", pady=(0, 6))
         ttk.Label(meter, text="Input").grid(row=0, column=0, padx=(0, 6))
@@ -391,6 +401,7 @@ class App:
             "shape": self.shape.get(),
             "txdelay": self.txdelay.get(),
         }
+        self.settings["receive"] = {"always": self.listen_always.get()}
         u = self.settings["updater"]
         u["enabled"] = self.auto_update.get()
         u["channel"] = "beta" if self.channel.get() == CHANNELS[1] else "stable"
@@ -676,6 +687,10 @@ class App:
             self.say(f"Listening will record to {path}.")
         else:
             self.record.set(False)
+
+    def _listen_on_open(self) -> None:
+        if not self.listener:
+            self.toggle_rx()
 
     def toggle_rx(self) -> None:
         if self.listener:

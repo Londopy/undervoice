@@ -4,6 +4,10 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- The window starts listening as soon as it opens. Untick **Listen whenever undervoice is open** to start it by hand instead; the choice is remembered.
+
 ## [0.3.0] - 2026-11-19
 
 ### Added
