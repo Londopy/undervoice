@@ -4,6 +4,8 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-19
+
 ### Added
 
 - The window starts listening as soon as it opens. Untick **Listen whenever undervoice is open** to start it by hand instead; the choice is remembered.
@@ -44,7 +46,8 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 - `rx --record` saves received audio for offline decoding, and `rx` warns when the input clips.
 - README sections on testing over the air and on the Part 97 rules.
 
-[Unreleased]: https://github.com/Londopy/undervoice/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Londopy/undervoice/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Londopy/undervoice/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Londopy/undervoice/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Londopy/undervoice/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Londopy/undervoice/releases/tag/v0.1.0
