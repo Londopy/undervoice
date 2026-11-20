@@ -17,10 +17,11 @@ import numpy as np
 from scipy.signal import resample_poly
 
 from ._audio import Decimator, Interpolator, to_int16
-from ._cwid import ID_EVERY, morse
+from ._cwid import due, morse
 from ._demodulator import Frame
 from ._message import Message
 from ._modes import VOICE, decode, encode, mixer
+from ._modulator import Modulator
 from ._ptt import Keyer, SetupError, choices
 from ._waveform import FRAME, RATE
 
@@ -122,15 +123,16 @@ class _Sender:
             self.override = self.override[len(speech) :]
             outdata[:, 0] = self.up(np.pad(chunk, (0, len(speech) - len(chunk))))
         elif self.keyed and self.hold <= 0:
-            # sub-audible data runs through pauses, so a restart would only waste a frame
-            if self.mode == VOICE:
-                self._watch_pauses(speech)
+            # only the data under the voice stops in pauses; sub-audible data runs through
+            # them, so a restart there would only waste a frame
+            if isinstance(self.mod, Modulator):
+                self._watch_pauses(self.mod, speech)
             outdata[:, 0] = self.up(self.mod.process(speech))
         else:
             self.hold -= len(speech)
             outdata[:, 0] = self.up(np.zeros(len(speech)))
 
-    def _watch_pauses(self, speech: np.ndarray) -> None:
+    def _watch_pauses(self, mod: Modulator, speech: np.ndarray) -> None:
         level = float(np.sqrt(np.mean(speech**2)))
         # the loudest recent speech, fading by about 4 dB over ten seconds
         self.loudest = max(level, self.loudest * PAUSE_FADE)
@@ -138,7 +140,7 @@ class _Sender:
             self.quiet += len(speech)
             return
         if self.quiet >= NEW_OVER * RATE:
-            self.mod.restart()
+            mod.restart()
         self.quiet = 0
 
     def key(self) -> None:
@@ -190,25 +192,33 @@ class Transmitter:
             self.ptt.key(True)
         self.sender.key()
 
-    def identify(self) -> None:
-        """Send the callsign in Morse, while still keyed, and wait until it has gone out."""
+    def identify(self) -> bool:
+        """Send the callsign in Morse, while still keyed, and wait until it has gone out.
+        False, sending nothing, when the sound card has stopped."""
+        if not self.active:
+            return False
         tone = morse(self.message.call)
         self.sender.override = tone
         # the length of the tone plus the sound card's output buffering
         time.sleep(len(tone) / RATE + 0.3)
+        return True
 
     def unkey(self) -> None:
         self.sender.unkey()
         if self.ptt:
             self.ptt.key(False)
 
-    def close(self, identify: bool = False) -> None:
-        """Unkey and release the sound card, sending the Morse ID first when asked."""
-        if identify and self.keyed:
-            self.identify()
-        self.unkey()
-        self.stream.stop()
-        self.stream.close()
+    def close(self, identify: bool = False) -> bool:
+        """Unkey and release the sound card, sending the Morse ID first when asked. True if
+        the ID went out. It always tries to unkey, and lets the card go even if that fails."""
+        try:
+            return identify and self.keyed and self.identify()
+        finally:
+            try:
+                self.unkey()
+            finally:
+                self.stream.stop()
+                self.stream.close()
 
 
 def _enter_presses() -> queue.Queue[str]:
@@ -240,13 +250,13 @@ def transmit(
     mode: str = VOICE,
 ) -> None:
     """Mic in, speech with data out, until Ctrl+C. With ptt, Enter keys and unkeys the radio.
-    With cw_id, an over that ends 10 minutes or more after the last ID ends with the callsign
-    in Morse."""
+    With cw_id, an over ends with the callsign in Morse when an ID is due: the first over,
+    then any that ends 9 minutes or more after the last ID. Without ptt the run is one over."""
     tx = Transmitter(message, level_db, shape, src, dst, ptt, txdelay, pause_db, mode)
     last_id: float | None = None
 
     def id_due() -> bool:
-        return cw_id and (last_id is None or time.monotonic() - last_id >= ID_EVERY)
+        return cw_id and due(last_id)
 
     try:
         if ptt is None:
@@ -267,8 +277,8 @@ def transmit(
             if tx.keyed:
                 if id_due():
                     print("sending CW ID")
-                    tx.identify()
-                    last_id = time.monotonic()
+                    if tx.identify():
+                        last_id = time.monotonic()
                 tx.unkey()
                 print("receiving")
             else:

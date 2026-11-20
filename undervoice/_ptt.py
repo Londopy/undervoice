@@ -96,12 +96,16 @@ class Cm108(Keyer):
 
     def key(self, on: bool) -> None:
         # report 0, then the CM108's four output bytes: reserved, GPIO direction, GPIO level,
-        # reserved; the pin is driven as an output and set high to key
-        self.dev.write([0, 0, self.mask, self.mask if on else 0, 0])
+        # reserved; the pin is driven as an output and set high to key. hidapi returns -1
+        # rather than raising when the write fails
+        if self.dev.write([0, 0, self.mask, self.mask if on else 0, 0]) < 0:
+            raise SetupError(f"{self.name} didn't take the PTT command")
 
     def close(self) -> None:
-        self.key(False)
-        self.dev.close()
+        try:
+            self.key(False)
+        finally:
+            self.dev.close()
 
 
 class SerialLine(Keyer):
@@ -125,8 +129,10 @@ class SerialLine(Keyer):
         setattr(self.port, self.line, on)
 
     def close(self) -> None:
-        self.key(False)
-        self.port.close()
+        try:
+            self.key(False)
+        finally:
+            self.port.close()
 
 
 class Rigctld(Keyer):
@@ -153,6 +159,8 @@ class Rigctld(Keyer):
         try:
             self.key(False)
         finally:
+            # the socket stays open until the file reading its replies is closed too
+            self.replies.close()
             self.sock.close()
 
 
