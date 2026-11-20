@@ -185,8 +185,9 @@ def test_space_does_nothing_without_a_valid_station(window):
 
 
 class IdleListener:
-    def __init__(self, shape, src, record):
+    def __init__(self, shape, src, record, mode):
         self.src = src
+        self.mode = mode
         self.running = True
         self.peak = 0.0
         self.heard = queue.Queue()
@@ -212,6 +213,7 @@ def test_window_listens_as_soon_as_it_opens(window, monkeypatch):
     # the USB interface, which the window picks for audio from the radio
     assert app.listener.src == 1
     assert app.rx_button.cget("text") == "Stop listening"
+    assert app.listener.mode == "voice"
 
 
 def test_cw_id_goes_out_before_unkeying_then_waits_ten_minutes(window):
@@ -251,3 +253,13 @@ def test_reminder_to_identify_without_cw_id(window):
     app.last_id = time.monotonic() - 601
     app._remind_id()
     assert "callsign" in app.status.cget("text")
+
+
+def test_mode_choice_is_remembered(window):
+    from undervoice._gui import MODE_NAMES
+
+    make, path = window
+    app = make()
+    app.mode.set(MODE_NAMES["sub"])
+    app.close()
+    assert load_settings(path)["radio"]["mode"] == "sub"

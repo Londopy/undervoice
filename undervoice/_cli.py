@@ -5,16 +5,17 @@ from __future__ import annotations
 import argparse
 import glob
 import sys
+import time
 from contextlib import AbstractContextManager, nullcontext
 
 import numpy as np
 
-from . import _abx, _live
+from . import _abx, _check, _live
 from ._audio import read_wav, write_wav
 from ._channel import fm_channel
-from ._demodulator import decode
 from ._message import Message
-from ._modulator import LEVEL_DB, SHAPE, encode
+from ._modes import MODES, VOICE, decode, encode
+from ._modulator import LEVEL_DB, SHAPE
 from ._ptt import Keyer, SetupError, open_keyer
 from ._sweep import sweep
 from ._updater import current
@@ -47,6 +48,31 @@ def _keyer(args: argparse.Namespace) -> AbstractContextManager[Keyer | None]:
 def _paths(patterns: list[str]) -> list[str]:
     # PowerShell hands patterns like speech/*.wav over unexpanded
     return [p for pattern in patterns for p in sorted(glob.glob(pattern)) or [pattern]]
+
+
+def _check_setup(args: argparse.Namespace) -> None:
+    message = _message(args)
+    print(f"recording {_check.SECONDS:.0f} s from the microphone: talk normally")
+    mic = _check.MicCheck(args.input)
+    while not mic.done:
+        time.sleep(1)
+        print(f"  {mic.left:3.0f} s left, peak {20 * np.log10(max(mic.peak, 1e-6)):6.1f} dBFS")
+    result = _check.finish(
+        mic.audio(), message, args.level, args.shape, args.pause_level, args.mode
+    )
+    print(f"peaks {result.peak_db:.1f} dBFS, speech about {result.speech_db:.1f} dBFS")
+    print(result.advice)
+    if result.frames:
+        print(f"the data mixed into it decodes: {message}")
+    else:
+        print("the data mixed into it did not decode; talk for the whole recording and try again")
+    print("playing back what would go to the radio, on the default output")
+    _check.play_back(result.mixed, wait=True)
+    if args.ptt:
+        with open_keyer(args.ptt, args.ptt_gpio) as keyer:
+            print(f"keying the radio for {_check.PTT_SECONDS:.0f} s through {keyer.name}")
+            _check.key_briefly(keyer)
+        print("unkeyed")
 
 
 def _abx_session(args: argparse.Namespace) -> None:
@@ -86,6 +112,16 @@ def _add_message(p: argparse.ArgumentParser) -> None:
     p.add_argument("--status", default="", help="up to 32 characters of A-Z 0-9 / - . and space")
 
 
+def _add_mode(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--mode",
+        choices=MODES,
+        default=VOICE,
+        help="voice: data under the speech, works through repeaters (default); sub: "
+        "sub-audible below 300 Hz through a 9600 data port, simplex and tone-free channels only",
+    )
+
+
 def _add_tuning(p: argparse.ArgumentParser, level: bool = True) -> None:
     if level:
         p.add_argument(
@@ -119,10 +155,12 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("output")
     _add_message(p)
     _add_tuning(p)
+    _add_mode(p)
 
     p = sub.add_parser("decode", help="print the frames found in a WAV file")
     p.add_argument("input")
     _add_tuning(p, level=False)
+    _add_mode(p)
 
     p = sub.add_parser("channel", help="pass a WAV file through the simulated FM channel")
     p.add_argument("input")
@@ -141,6 +179,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--hops", type=int, default=1, help="1 for simplex, 2 through a repeater")
     p.add_argument("--ppm", type=float, default=0.0, help="sound card clock offset")
+    p.add_argument(
+        "--path",
+        choices=("voice", "flat"),
+        default="voice",
+        help="voice: mic and speaker audio with their filters and emphasis (default); flat: "
+        "a 9600 data port, as the sub-audible mode needs",
+    )
     p.add_argument("--seed", type=int)
 
     p = sub.add_parser("sweep", help="frame loss against data level through the FM channel")
@@ -161,6 +206,7 @@ def _parser() -> argparse.ArgumentParser:
     p = sub.add_parser("tx", help="send data under live mic audio, or under a WAV file")
     _add_message(p)
     _add_tuning(p)
+    _add_mode(p)
     p.add_argument("--play", metavar="WAV", help="play this recording instead of using the mic")
     p.add_argument("--input", type=_device, help="mic device (number or name)")
     p.add_argument("--output", type=_device, help="radio audio device (number or name)")
@@ -190,6 +236,7 @@ def _parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("rx", help="listen on a sound card and print frames")
     _add_tuning(p, level=False)
+    _add_mode(p)
     p.add_argument("--input", type=_device, help="radio audio device (number or name)")
     p.add_argument("--record", metavar="WAV", help="also save the received audio to this file")
 
@@ -204,6 +251,20 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--export", metavar="FOLDER", help="write the clips and answer key instead")
     p.add_argument("--score", nargs="+", metavar="CSV", help="report on saved results instead")
     _add_tuning(p, level=False)
+
+    p = sub.add_parser("check", help="test the microphone, and optionally PTT, before going on air")
+    _add_message(p)
+    _add_tuning(p)
+    _add_mode(p)
+    p.add_argument("--input", type=_device, help="microphone (number or name)")
+    p.add_argument(
+        "--ptt",
+        nargs="?",
+        const="cm108",
+        metavar="HOW",
+        help="afterwards key the radio for 2 seconds this way (the same values tx takes)",
+    )
+    p.add_argument("--ptt-gpio", type=int, default=3, help="CM108 GPIO pin wired to PTT")
 
     sub.add_parser("devices", help="list sound devices")
     sub.add_parser("gui", help="open the undervoice window")
@@ -222,12 +283,12 @@ def main(argv: list[str] | None = None) -> int:
 
 def _run(args: argparse.Namespace) -> int:
     if args.command == "encode":
-        mixed = encode(
-            read_wav(args.input), _message(args), args.level, args.shape, args.pause_level
-        )
+        recording = read_wav(args.input)
+        message = _message(args)
+        mixed = encode(args.mode, recording, message, args.level, args.shape, args.pause_level)
         write_wav(args.output, mixed)
     elif args.command == "decode":
-        frames = decode(read_wav(args.input), args.shape)
+        frames = decode(args.mode, read_wav(args.input), args.shape)
         for f in frames:
             print(f"{f.start / RATE:8.2f} s  {f.message}  (snr {f.snr_db:.1f} dB)")
         if not frames:
@@ -235,7 +296,8 @@ def _run(args: argparse.Namespace) -> int:
             return 1
     elif args.command == "channel":
         rng = np.random.default_rng(args.seed)
-        out = fm_channel(read_wav(args.input), args.snr, args.drive, args.hops, args.ppm, rng)
+        audio = read_wav(args.input)
+        out = fm_channel(audio, args.snr, args.drive, args.hops, args.ppm, rng, path=args.path)
         write_wav(args.output, out)
     elif args.command == "sweep":
         speech = [read_wav(path) for path in _paths(args.speech)]
@@ -275,6 +337,7 @@ def _run(args: argparse.Namespace) -> int:
                     args.txdelay,
                     args.pause_level,
                     args.cw_id,
+                    args.mode,
                 )
             else:
                 _live.transmit(
@@ -287,11 +350,14 @@ def _run(args: argparse.Namespace) -> int:
                     args.txdelay,
                     args.pause_level,
                     args.cw_id,
+                    args.mode,
                 )
     elif args.command == "rx":
-        _live.receive(args.shape, args.input, args.record)
+        _live.receive(args.shape, args.input, args.record, args.mode)
     elif args.command == "abx":
         _abx_session(args)
+    elif args.command == "check":
+        _check_setup(args)
     elif args.command == "devices":
         _live.devices()
     elif args.command == "gui":

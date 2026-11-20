@@ -15,7 +15,9 @@ from typing import Any
 
 from . import _config, _updater
 from ._audio import read_wav
+from ._check import MicCheck, MicResult, finish, key_briefly, play_back
 from ._cwid import ID_EVERY
+from ._modes import SUB, VOICE
 from ._live import Listener, Transmitter, cards, play, stop_playing
 from ._message import Message
 from ._modulator import LEVEL_DB, SHAPE
@@ -37,6 +39,7 @@ DARK = {
 NO_PTT = "None: VOX (SignaLink and similar) or I key the radio myself"
 # the data level kept up through pauses, in dB below the recent speech, or off to let it stop
 PAUSES = ("off", "-45", "-40", "-35", "-30")
+MODE_NAMES = {VOICE: "Under the voice", SUB: "Sub-audible (data port)"}
 CHANNELS = ["stable releases", "beta (pre-releases too)"]
 
 
@@ -104,6 +107,8 @@ class App:
         self.held = False
         self.release_pending: str | None = None
         self.identifying = False
+        self.mic_check: MicCheck | None = None
+        self.testing_ptt = False
         # monotonic times for station ID: the last CW ID or reminder, and the last over's end
         self.last_id: float | None = None
         self.last_over: float | None = None
@@ -122,8 +127,8 @@ class App:
         root.title("undervoice")
         self._icon = _icon(self.c["accent"])
         root.iconphoto(True, self._icon)
-        root.minsize(720, 640)
-        root.geometry("860x720")
+        root.minsize(760, 700)
+        root.geometry("900x820")
         self._style()
         if self.dark:
             _dark_title_bar(root)
@@ -287,6 +292,9 @@ class App:
         ttk.Checkbutton(tuning, text="CW ID every 10 minutes", variable=self.cw_id).grid(
             row=1, column=4, sticky="w", padx=(4, 0), pady=(2, 6)
         )
+        self.mode = ttk.Combobox(tuning, values=list(MODE_NAMES.values()), state="readonly")
+        self.mode.set(MODE_NAMES[VOICE])
+        self._field(tuning, "Mode", self.mode, 0, 5)
 
         actions = ttk.Frame(f)
         actions.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(4, 2))
@@ -299,6 +307,21 @@ class App:
         ttk.Label(actions, text="or hold Space to talk; Esc stops", style="Muted.TLabel").grid(
             row=0, column=2, padx=(12, 0)
         )
+
+        tests = ttk.Frame(f)
+        tests.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(6, 2))
+        self.mic_button = ttk.Button(
+            tests, text="Test microphone", width=18, command=self.test_microphone
+        )
+        self.mic_button.grid(row=0, column=0, padx=(0, 8))
+        self.ptt_button = ttk.Button(tests, text="Test PTT", width=18, command=self.test_ptt)
+        self.ptt_button.grid(row=0, column=1)
+        ttk.Label(
+            tests,
+            text="records you, plays back what would be sent and decodes it; "
+            "Test PTT transmits for 2 s",
+            style="Muted.TLabel",
+        ).grid(row=0, column=2, padx=(12, 0))
         return f
 
     def _receive(self, parent: ttk.Frame) -> ttk.LabelFrame:
@@ -396,6 +419,8 @@ class App:
         label = next((lb for lb, how in self.keyers if how and how == radio.get("ptt")), None)
         if label:
             self.ptt_box.set(label)
+        if radio.get("mode") in MODE_NAMES:
+            self.mode.set(MODE_NAMES[radio["mode"]])
         if radio.get("pause") in PAUSES:
             self.pause.set(radio["pause"])
         self.cw_id.set(bool(radio.get("cw_id", False)))
@@ -419,6 +444,7 @@ class App:
             "shape": self.shape.get(),
             "txdelay": self.txdelay.get(),
             "pause": self.pause.get(),
+            "mode": self._mode(),
             "cw_id": self.cw_id.get(),
         }
         self.settings["receive"] = {"always": self.listen_always.get()}
@@ -557,6 +583,9 @@ class App:
     def _index(self, box: ttk.Combobox, devices: list[tuple[int, str]]) -> int | None:
         return next((i for i, n in devices if n == box.get()), None)
 
+    def _mode(self) -> str:
+        return next((m for m, name in MODE_NAMES.items() if name == self.mode.get()), VOICE)
+
     def _open_ptt(self) -> Keyer | None:
         how = next((h for label, h in self.keyers if label == self.ptt_box.get()), None)
         return None if how is None else open_keyer(how)
@@ -629,6 +658,7 @@ class App:
                 self.ptt,
                 delay,
                 pause,
+                self._mode(),
             )
             self.tx.key()
         except SetupError as e:
@@ -668,10 +698,11 @@ class App:
         identify = self._id_due()
         if identify:
             self.last_id = time.monotonic()
+        mode = self._mode()
 
         def work() -> None:
             try:
-                play(speech, message, level, shape, out, ptt, delay, pause, identify)
+                play(speech, message, level, shape, out, ptt, delay, pause, identify, mode)
             except SetupError as e:
                 self.events.put(("error", str(e)))
             finally:
@@ -765,7 +796,10 @@ class App:
             return
         try:
             self.listener = Listener(
-                numbers[1], self._index(self.from_radio, self.inputs), self.record_path
+                numbers[1],
+                self._index(self.from_radio, self.inputs),
+                self.record_path,
+                self._mode(),
             )
         except SetupError as e:
             self.say(str(e), error=True)
@@ -796,13 +830,14 @@ class App:
                 self.empty.grid_remove()
             while not self.listener.notes.empty():
                 self.say(self.listener.notes.get(), error=True)
-            self._draw_meter(self.listener.peak)
+            self._draw_meter(self.mic_check.peak if self.mic_check else self.listener.peak)
             if not self.listener.running:
                 self.listener.stop()
                 self.listener = None
                 self._show_state()
         else:
-            self._draw_meter(None)
+            self._draw_meter(self.mic_check.peak if self.mic_check else None)
+        self._watch_mic_check()
         if self.tx:
             while not self.tx.sender.problems.empty():
                 self.say(f"Sound card: {self.tx.sender.problems.get()}", error=True)
@@ -836,10 +871,98 @@ class App:
             self.update_status.configure(text=str(detail), foreground=self.c["tx"])
         elif kind == "restart":
             self.close()
+        elif kind == "mic-checked":
+            self._show_mic_check(detail)
+        elif kind == "ptt-tested":
+            self.testing_ptt = False
+            self.ptt_button.state(["!disabled"])
+            self.say(detail, error=detail.startswith("PTT test failed"))
         elif kind == "identified":
             self.identifying = False
             self.say("Sent your callsign in Morse and unkeyed.")
             self._show_state()
+
+    def test_microphone(self) -> None:
+        if self.mic_check:
+            return
+        if self._message() is None:
+            self.say("Enter your callsign first: the test mixes your data into the recording.")
+            return
+        try:
+            self.mic_check = MicCheck(self._index(self.mic, self.inputs))
+        except SetupError as e:
+            self.say(str(e), error=True)
+            return
+        self.mic_button.state(["disabled"])
+        self.say("Recording: talk normally until the countdown ends.")
+
+    def _watch_mic_check(self) -> None:
+        check = self.mic_check
+        if check is None:
+            return
+        if not check.done:
+            self.mic_button.configure(text=f"Recording {check.left:.0f} s")
+            return
+        self.mic_check = None
+        self.mic_button.configure(text="Checking...")
+        audio = check.audio()
+        message, numbers = self._message(), self._numbers()
+        if message is None or numbers is None:
+            self.mic_button.configure(text="Test microphone")
+            self.mic_button.state(["!disabled"])
+            return
+        level, shape, _, pause = numbers
+        mode = self._mode()
+
+        def work() -> None:
+            self.events.put(("mic-checked", finish(audio, message, level, shape, pause, mode)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_mic_check(self, result: MicResult) -> None:
+        self.mic_button.configure(text="Test microphone")
+        self.mic_button.state(["!disabled"])
+        decoded = (
+            "the data decoded"
+            if result.frames
+            else "the data did not decode (talk through the whole countdown)"
+        )
+        self.say(
+            f"Mic peaks {result.peak_db:.0f} dBFS, speech {result.speech_db:.0f} dBFS. "
+            f"{result.advice} Playing back what would be sent; {decoded}.",
+            error=not result.frames or "good" not in result.advice,
+        )
+        try:
+            play_back(result.mixed)
+        except SetupError as e:
+            self.say(f"Can't play it back: {e}", error=True)
+
+    def test_ptt(self) -> None:
+        if self.testing_ptt or self.tx or self.sending:
+            return
+        try:
+            keyer = self._open_ptt()
+        except SetupError as e:
+            self.say(str(e), error=True)
+            return
+        if keyer is None:
+            self.say("Pick how undervoice keys the radio under PTT first.", error=True)
+            return
+        self.testing_ptt = True
+        self.ptt_button.state(["disabled"])
+        self.say(f"Keying the radio for 2 s through {keyer.name}.")
+
+        def work() -> None:
+            try:
+                key_briefly(keyer)
+                outcome = f"PTT works through {keyer.name}: the radio should have transmitted."
+            except (SetupError, OSError) as e:
+                outcome = f"PTT test failed: {e}"
+            finally:
+                keyer.close()
+            self.events.put(("ptt-tested", outcome))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _draw_meter(self, peak: float | None) -> None:
         self.meter.delete("all")

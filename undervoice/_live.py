@@ -18,9 +18,9 @@ from scipy.signal import resample_poly
 
 from ._audio import Decimator, Interpolator, to_int16
 from ._cwid import ID_EVERY, morse
-from ._demodulator import Frame, decode
+from ._demodulator import Frame
 from ._message import Message
-from ._modulator import Modulator, encode
+from ._modes import VOICE, decode, encode, mixer
 from ._ptt import Keyer, SetupError, choices
 from ._waveform import FRAME, RATE
 
@@ -98,9 +98,11 @@ class _Sender:
         shape: float,
         delay: float,
         pause_db: float | None = None,
+        mode: str = VOICE,
     ):
+        self.mode = mode
         self.args = (message, level_db, shape, pause_db)
-        self.mod = Modulator(*self.args)
+        self.mod = mixer(mode, *self.args)
         self.down, self.up = Decimator(), Interpolator()
         self.delay = delay
         self.keyed = False
@@ -120,7 +122,9 @@ class _Sender:
             self.override = self.override[len(speech) :]
             outdata[:, 0] = self.up(np.pad(chunk, (0, len(speech) - len(chunk))))
         elif self.keyed and self.hold <= 0:
-            self._watch_pauses(speech)
+            # sub-audible data runs through pauses, so a restart would only waste a frame
+            if self.mode == VOICE:
+                self._watch_pauses(speech)
             outdata[:, 0] = self.up(self.mod.process(speech))
         else:
             self.hold -= len(speech)
@@ -139,7 +143,7 @@ class _Sender:
 
     def key(self) -> None:
         # a fresh modulator starts a frame with each transmission, after the radio's TX delay
-        self.mod = Modulator(*self.args)
+        self.mod = mixer(self.mode, *self.args)
         self.hold = int(self.delay * RATE)
         self.quiet = 0
         self.keyed = True
@@ -161,10 +165,12 @@ class Transmitter:
         ptt: Keyer | None = None,
         txdelay: float = 0.3,
         pause_db: float | None = None,
+        mode: str = VOICE,
     ):
         self.message = message
         self.ptt = ptt
-        self.sender = _Sender(message, level_db, shape, txdelay if ptt else 0.0, pause_db)
+        delay = txdelay if ptt else 0.0
+        self.sender = _Sender(message, level_db, shape, delay, pause_db, mode)
         sd = _sd()
         self.stream = _open(
             sd.Stream, CARD_RATE, BLOCK, (src, dst), channels=1, callback=self.sender.callback
@@ -231,11 +237,12 @@ def transmit(
     txdelay: float = 0.3,
     pause_db: float | None = None,
     cw_id: bool = False,
+    mode: str = VOICE,
 ) -> None:
     """Mic in, speech with data out, until Ctrl+C. With ptt, Enter keys and unkeys the radio.
     With cw_id, an over that ends 10 minutes or more after the last ID ends with the callsign
     in Morse."""
-    tx = Transmitter(message, level_db, shape, src, dst, ptt, txdelay, pause_db)
+    tx = Transmitter(message, level_db, shape, src, dst, ptt, txdelay, pause_db, mode)
     last_id: float | None = None
 
     def id_due() -> bool:
@@ -282,11 +289,12 @@ def play(
     txdelay: float = 0.3,
     pause_db: float | None = None,
     cw_id: bool = False,
+    mode: str = VOICE,
 ) -> None:
     """Play a recording with data mixed in, keying the radio around it when ptt is given, and
     ending with the callsign in Morse when cw_id is set."""
     sd = _sd()
-    mixed = encode(speech, message, level_db, shape, pause_db)
+    mixed = encode(mode, speech, message, level_db, shape, pause_db)
     if cw_id:
         mixed = np.concatenate([mixed, np.zeros(RATE // 4), morse(message.call)])
     audio = resample_poly(mixed, 6, 1)
@@ -330,8 +338,9 @@ class Listener:
     """Decodes frames from a sound card input on its own thread. Frames arrive on `heard`,
     warnings on `notes`, and `peak` is the latest input peak for a level meter."""
 
-    def __init__(self, shape: float, src: Device, record: str | None = None):
+    def __init__(self, shape: float, src: Device, record: str | None = None, mode: str = VOICE):
         self.shape = shape
+        self.mode = mode
         self.heard: queue.Queue[Heard] = queue.Queue()
         self.notes: queue.Queue[str] = queue.Queue()
         self.peak = 0.0
@@ -394,7 +403,7 @@ class Listener:
             if pending < EVERY:
                 continue
             pending = 0
-            for frame in decode(audio, self.shape):
+            for frame in decode(self.mode, audio, self.shape):
                 at = origin + frame.start
                 # the same frame stays in the buffer for a few passes
                 if any(abs(at - s) < RATE for s in seen):
@@ -403,10 +412,10 @@ class Listener:
                 self.heard.put(Heard(time.time(), frame))
 
 
-def receive(shape: float, src: Device, record: str | None = None) -> None:
+def receive(shape: float, src: Device, record: str | None = None, mode: str = VOICE) -> None:
     """Print every frame heard on the input, until Ctrl+C. With record, also save the
     received audio to a WAV file so a session can be decoded again offline."""
-    listener = Listener(shape, src, record)
+    listener = Listener(shape, src, record, mode)
     print("listening, Ctrl+C to stop" + (f", recording to {record}" if record else ""))
     try:
         while listener.running:
