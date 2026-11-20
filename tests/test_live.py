@@ -662,7 +662,9 @@ def test_changing_the_mode_listens_again_in_the_new_one(window, monkeypatch):
     app.toggle_rx()
     first = app.listener
     app.mode.set(gui.MODE_NAMES["sub"])
-    # Tk on macOS queues the event instead of handling it at once
+    # Tk 9 on macOS drops generated events for a window that isn't shown
+    app.root.deiconify()
+    app.root.update()
     app.mode.event_generate("<<ComboboxSelected>>")
     assert wait_for(app, lambda: not first.running)
     assert app.listener.mode == "sub"
