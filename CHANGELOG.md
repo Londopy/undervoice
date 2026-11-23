@@ -4,6 +4,8 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-23
+
 ### Added
 
 - Text messages to another station, or to everyone: up to 384 characters, sent 24 to a frame in place of the station frame and put back together on receive, with gaps shown where a part was missed. Under the voice, a part counts as sent only once speech has carried data across most of its frame, so keying without talking doesn't use it up; it goes again. **Messages** in the window has a counter of how much talking a message needs, **Send again** to fill a receiver's gaps, **Cancel**, and the whole text of the message you pick; **Send a recording...** carries queued parts too. On the command line, `tx --to CALL --msg TEXT`, and `rx` and `decode` print the messages they hear. Stations on 0.5.0 or older ignore message frames.
@@ -79,7 +81,8 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 - `rx --record` saves received audio for offline decoding, and `rx` warns when the input clips.
 - README sections on testing over the air and on the Part 97 rules.
 
-[Unreleased]: https://github.com/Londopy/undervoice/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Londopy/undervoice/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Londopy/undervoice/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Londopy/undervoice/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Londopy/undervoice/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Londopy/undervoice/compare/v0.2.0...v0.3.0
