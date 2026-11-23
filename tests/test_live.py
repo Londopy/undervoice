@@ -1,21 +1,25 @@
 import queue
+import re
 import sys
 import threading
 import time
 import tkinter as tk
 import types
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pytest
 from scipy.signal import resample_poly
 
-from undervoice import FRAME, RATE, Message, encode, read_wav, write_wav
+from undervoice import FRAME, RATE, Frame, Message, encode, read_wav, write_wav
 from undervoice import _live
 from undervoice._cli import main
 from undervoice._config import load as load_settings
+from undervoice._config import save as save_settings
 from undervoice._cwid import morse
-from undervoice._live import BLOCK, CARD_RATE, Listener, Transmitter, _Sender
+from undervoice._live import BLOCK, CARD_RATE, Heard, Listener, Transmitter, _Sender
+from undervoice._message import split
 from undervoice._ptt import Keyer, SetupError
 from undervoice._subaudible import FRAME as SUB_FRAME
 from undervoice._subaudible import decode as sub_decode
@@ -26,6 +30,10 @@ needs_speech = pytest.mark.skipif(not SPEECH.exists(), reason="speech recordings
 MSG = Message("W1AW", "FN31pr", "FAKE CARD TEST")
 # window settings for tests: no update checks and no listening until a test asks
 QUIET = "[updater]\nenabled = false\n\n[receive]\nalways = false\n"
+# two parts: the first 24 characters, then " BRING THE ANTENNA."
+TEXT = "Meet you on 146.52 at 7? Bring the antenna."
+SENT = "MEET YOU ON 146.52 AT 7? BRING THE ANTENNA."
+STAMP = r"\d{4}-\d\d-\d\d \d\d:\d\d  "
 
 
 class FakeInput:
@@ -366,6 +374,68 @@ def test_rx_in_sub_mode_prints_sub_audible_frames(fake_sd, monkeypatch, capsys):
     with pytest.raises(SystemExit, match="audio stream stopped"):
         main(["rx", "--mode", "sub"])
     assert capsys.readouterr().out.count(str(MSG)) == 1
+
+
+def test_rx_puts_messages_together_and_logs_them(fake_sd, monkeypatch, tmp_path, capsys):
+    whole = split("W1AW", "N0CALL", TEXT, 7)
+    # only the first of two parts goes out
+    cut = split("K1ABC", "", "CQ CQ, anyone on the net tonight?", 12)[:1]
+    parts = whole + cut
+    audio = sub_encode(np.zeros(len(parts) * SUB_FRAME + 6 * RATE), MSG, parts=parts)
+    monkeypatch.setattr(FakeInput, "audio", resample_poly(audio, 6, 1))
+    log = tmp_path / "messages.txt"
+    with pytest.raises(SystemExit, match="audio stream stopped"):
+        main(["rx", "--mode", "sub", "--messages", str(log)])
+    out = capsys.readouterr().out
+    assert "W1AW > N0CALL 2/2:  BRING THE ANTENNA." in out
+    assert re.search(f"^message: {STAMP}W1AW > N0CALL  {re.escape(SENT)}$", out, re.M)
+    # the one still missing a part goes in when rx stops
+    complete, unfinished = log.read_text(encoding="utf-8").splitlines()
+    assert re.fullmatch(f"{STAMP}W1AW > N0CALL  {re.escape(SENT)}", complete)
+    assert re.fullmatch(
+        STAMP + re.escape("K1ABC > ALL  CQ CQ, ANYONE ON THE NET[...]  (missing part 2 of 2)"),
+        unfinished,
+    )
+
+
+def test_tx_sends_a_message_in_parts_and_logs_it_once_all_have_gone(
+    running_card, monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(RunningDuplex, "mic", np.zeros(6 * (2 * SUB_FRAME + RATE)))
+    log = tmp_path / "messages.txt"
+    args = ["--to", "N0CALL", "--msg", TEXT, "--messages", str(log)]
+    with pytest.raises(SystemExit, match="audio stream stopped"):
+        main(["tx", "--call", "W1AW", "--mode", "sub", *args])
+    assert "sent part 1 of 2\nsent part 2 of 2\nmessage sent\n" in capsys.readouterr().out
+    [line] = log.read_text(encoding="utf-8").splitlines()
+    assert re.fullmatch(f"{STAMP}W1AW > N0CALL  {re.escape(SENT)}", line)
+    [card] = running_card
+    heard = [f.message for f in sub_decode(resample_poly(np.concatenate(card.sent), 1, 6))]
+    assert "".join(p.text for p in heard) == SENT
+
+
+def test_tx_play_says_which_parts_a_short_recording_leaves_out(fake_sd, tmp_path, capsys):
+    wav = tmp_path / "short.wav"
+    write_wav(wav, np.zeros(SUB_FRAME + RATE))
+    log = tmp_path / "messages.txt"
+    args = ["--call", "W1AW", "--mode", "sub", "--msg", "X" * 60, "--messages", str(log)]
+    assert main(["tx", "--play", str(wav), *args]) == 0
+    err = capsys.readouterr().err
+    assert f"{wav} is too short for the whole message: parts 2, 3 of 3 won't go out" in err
+    # it still plays, with the part that fits
+    [(audio, rate, device, blocking)] = fake_sd.played
+    assert [f.message.text for f in sub_decode(resample_poly(audio, 1, 6))] == ["X" * 24]
+    assert not log.exists()
+
+
+def test_tx_play_logs_a_message_that_fits(fake_sd, tmp_path):
+    wav = tmp_path / "long.wav"
+    write_wav(wav, np.zeros(2 * SUB_FRAME + RATE))
+    log = tmp_path / "messages.txt"
+    args = ["--call", "W1AW", "--mode", "sub", "--msg", TEXT, "--messages", str(log)]
+    assert main(["tx", "--play", str(wav), *args]) == 0
+    [line] = log.read_text(encoding="utf-8").splitlines()
+    assert re.fullmatch(f"{STAMP}W1AW > ALL  {re.escape(SENT)}", line)
 
 
 @needs_speech
@@ -920,3 +990,200 @@ def test_a_mic_check_cut_short_by_the_sound_card_says_so(window, monkeypatch, fa
     assert app.mic_button.cget("text") == "Test microphone"
     assert not app.mic_button.instate(["disabled"])
     assert fake_sd.played == []
+
+
+def write(app, text, to=""):
+    app.to_call.set(to)
+    app.draft.insert("end", text)
+
+
+# a little over one sub-audible frame of silence from the microphone, at the card's rate
+ONE_SUB_FRAME = np.zeros(6 * SUB_FRAME + 4 * BLOCK)
+
+
+def test_the_counter_says_how_much_talking_a_message_needs(window):
+    from undervoice._gui import MODE_NAMES
+
+    make, _ = window
+    app = make()
+    app.call.set("W1AW")
+    # Tk 9 on macOS drops generated events for a window that isn't shown
+    app.root.deiconify()
+    app.root.update()
+    assert app.send_msg_button.instate(["disabled"])
+    write(app, "x" * 49)
+    assert wait_for(
+        app, lambda: app.counter.cget("text") == "49 characters, 3 frames, about 28 s of talking"
+    )
+    assert not app.send_msg_button.instate(["disabled"])
+    app.mode.set(MODE_NAMES["sub"])
+    app.mode.event_generate("<<ComboboxSelected>>")
+    assert wait_for(
+        app,
+        lambda: app.counter.cget("text") == "49 characters, 3 frames, about 18 s of transmitting",
+    )
+    write(app, " $5")
+    assert wait_for(app, lambda: "outside A-Z 0-9" in app.counter.cget("text"))
+    assert str(app.counter.cget("foreground")) == app.c["tx"]
+    assert app.send_msg_button.instate(["disabled"])
+
+
+def test_send_while_transmitting_queues_the_parts_and_cancel_drops_them(window):
+    make, _ = window
+    app = make()
+    app.call.set("W1AW")
+    app.toggle_tx()
+    write(app, TEXT, to="n0call")
+    app.send_message()
+    waiting = app.tx.frames.waiting
+    assert [(p.sender, p.to, p.index, p.total) for p in waiting] == [
+        ("W1AW", "N0CALL", 0, 2),
+        ("W1AW", "N0CALL", 1, 2),
+    ]
+    assert "".join(p.text for p in waiting) == SENT
+    assert app.draft.get("1.0", "end").strip() == ""
+    assert app.progress.cget("text") == "Sending part 1 of 2 to N0CALL"
+    app.cancel_message()
+    assert app.tx.frames.waiting == []
+    assert app.progress.cget("text") == ""
+    assert app.cancel_button.instate(["disabled"])
+
+
+def test_a_message_sent_while_idle_waits_for_the_next_over(window):
+    make, _ = window
+    app = make()
+    app.call.set("W1AW")
+    write(app, TEXT)
+    app.send_message()
+    assert app.tx is None
+    assert app.progress.cget("text") == "2 parts wait for your next over"
+    app.toggle_tx()
+    parts = app.tx.frames.waiting
+    assert [p.to for p in parts] == ["", ""]
+    assert app.progress.cget("text") == "Sending part 1 of 2 to everyone"
+    # nothing went out before that over ended, so the next one carries the lot
+    app.stop_sending()
+    assert app.progress.cget("text") == "2 parts wait for your next over"
+    app._space_down(None)
+    assert app.tx.frames.waiting == parts
+
+
+def test_a_space_typed_in_the_message_box_does_not_key(window, monkeypatch):
+    make, _ = window
+    app = make()
+    app.call.set("W1AW")
+    monkeypatch.setattr(app.root, "focus_get", lambda: app.draft)
+    app._space_down(None)
+    app._space_up(None)
+    assert app.tx is None
+    monkeypatch.setattr(app.root, "focus_get", lambda: app.message_list)
+    app._space_down(None)
+    assert app.tx is not None
+
+
+def test_progress_follows_the_parts_out_and_send_again_repeats_them(window):
+    from undervoice._gui import MODE_NAMES
+
+    make, _ = window
+    app = make()
+    app.call.set("W1AW")
+    app.mode.set(MODE_NAMES["sub"])
+    app.toggle_tx()
+    write(app, TEXT, to="N0CALL")
+    app.send_message()
+    parts = app.tx.frames.waiting
+    assert app.again_button.instate(["disabled"])
+    drive(app.tx.stream.callback, ONE_SUB_FRAME)
+    assert wait_for(app, lambda: app.progress.cget("text") == "Sending part 2 of 2 to N0CALL")
+    drive(app.tx.stream.callback, ONE_SUB_FRAME)
+    assert wait_for(app, lambda: app.progress.cget("text") == "Sent to N0CALL.")
+    [row] = app.message_list.get_children()
+    assert app.message_list.item(row, "values")[1:] == ("W1AW", "N0CALL", SENT)
+    # under the same number, so a station that missed a part can fill it in
+    app.send_again()
+    assert app.tx.frames.waiting == parts
+    assert app.progress.cget("text") == "Sending part 1 of 2 to N0CALL"
+
+
+def hear(app, payload, when=datetime(2026, 11, 20, 7, 12).timestamp()):
+    app.listener.heard.put(Heard(when, Frame(0.0, payload, 12.0)))
+
+
+def test_parts_heard_fill_in_one_row_highlighted_when_it_is_for_me(window, monkeypatch):
+    import undervoice._gui as gui
+
+    make, _ = window
+    monkeypatch.setattr(gui, "Listener", IdleListener)
+    app = make()
+    app.call.set("N0CALL")
+    app.toggle_rx()
+    first, second = split("W1AW", "N0CALL", TEXT, 9)
+    hear(app, second)
+    assert wait_for(app, lambda: app.message_list.get_children())
+    [row] = app.message_list.get_children()
+    assert app.message_list.item(row, "values")[1:] == (
+        "W1AW",
+        "N0CALL",
+        "[...] BRING THE ANTENNA.",
+    )
+    assert "mine" in app.message_list.item(row, "tags")
+    assert app.status.cget("text") == "Message from W1AW."
+    hear(app, first)
+    hear(app, MSG)
+    assert wait_for(app, lambda: app.log.get_children())
+    assert app.message_list.get_children() == (row,)
+    assert app.message_list.item(row, "values")[3] == SENT
+    # station frames go to their own table, and parts don't
+    [station] = app.log.get_children()
+    assert app.log.item(station, "values")[1:4] == ("W1AW", "FN31pr", "FAKE CARD TEST")
+
+
+def test_saving_messages_writes_heard_and_sent_ones(window, monkeypatch, tmp_path):
+    import undervoice._gui as gui
+
+    make, path = window
+    log = tmp_path / "messages.txt"
+    settings = load_settings(path)
+    settings["messages"] = {"save": True, "path": str(log)}
+    save_settings(settings, path)
+    monkeypatch.setattr(gui, "Listener", IdleListener)
+    app = make()
+    assert app.open_button.instate(["disabled"])
+    app.call.set("N0CALL")
+    app.mode.set(gui.MODE_NAMES["sub"])
+    app.toggle_rx()
+    for part in split("W1AW", "N0CALL", TEXT, 9):
+        hear(app, part)
+    hear(app, split("K1ABC", "", "CQ CQ, anyone on the net tonight?", 4)[0])
+    assert wait_for(app, lambda: log.exists())
+    assert app.open_button.instate(["!disabled"]) == (sys.platform == "win32")
+    app.toggle_tx()
+    write(app, "QSL", to="W1AW")
+    app.send_message()
+    drive(app.tx.stream.callback, ONE_SUB_FRAME)
+    assert wait_for(app, lambda: app.progress.cget("text") == "Sent to W1AW.")
+    app.close()
+    heard, sent, unfinished = log.read_text(encoding="utf-8").splitlines()
+    assert heard == f"2026-11-20 07:12  W1AW > N0CALL  {SENT}"
+    assert re.fullmatch(f"{STAMP}N0CALL > W1AW  QSL", sent)
+    assert unfinished == (
+        "2026-11-20 07:12  K1ABC > ALL  CQ CQ, ANYONE ON THE NET[...]  (missing part 2 of 2)"
+    )
+    assert load_settings(path)["messages"] == {"save": True, "path": str(log)}
+
+
+def test_a_messages_file_that_cannot_be_written_is_reported(window, monkeypatch, tmp_path):
+    import undervoice._gui as gui
+
+    make, path = window
+    settings = load_settings(path)
+    # a folder where the file should be
+    settings["messages"] = {"save": True, "path": str(tmp_path)}
+    save_settings(settings, path)
+    monkeypatch.setattr(gui, "Listener", IdleListener)
+    app = make()
+    app.toggle_rx()
+    hear(app, split("W1AW", "", "CQ", 9)[0])
+    assert wait_for(app, lambda: app.message_list.get_children())
+    assert app.status.cget("text").startswith(f"Can't save messages to {tmp_path}")
+    app.close()

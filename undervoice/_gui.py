@@ -1,14 +1,18 @@
-"""The undervoice window: station details, sound cards and PTT, transmit and a receive log."""
+"""The undervoice window: station details, sound cards and PTT, transmit, text messages and a
+receive log."""
 
 from __future__ import annotations
 
 import math
+import os
 import queue
+import random
 import sys
 import threading
 import time
 import tkinter as tk
 import tomllib
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, font, ttk
 from typing import Any
@@ -17,15 +21,23 @@ from . import _config, _updater
 from ._audio import read_wav
 from ._check import MicCheck, MicResult, finish, key_briefly, play_back
 from ._cwid import ID_EVERY, due
-from ._modes import SUB, VOICE
-from ._live import Listener, Transmitter, cards, play, stop_playing
-from ._message import Message
+from ._frames import Frames
+from ._modes import SUB, VOICE, frame_length
+from ._live import Heard, Listener, Transmitter, cards, play, stop_playing
+from ._message import MAX_PARTS, PART_LEN, Message, Part, normalize, split
+from ._messages import Inbox, append, heard_line, line
 from ._modulator import LEVEL_DB, SHAPE
 from ._ptt import Keyer, SetupError, choices, open_keyer
 from ._waveform import RATE
 
 # Windows 11's own semantic colors, so the window reads like the rest of the desktop
-LIGHT = {"tx": "#c42b1c", "rx": "#0f7b0f", "muted": "#5d5d5d", "meter": "#e5e5e5"}
+LIGHT = {
+    "tx": "#c42b1c",
+    "rx": "#0f7b0f",
+    "muted": "#5d5d5d",
+    "meter": "#e5e5e5",
+    "line": "#8a8a8a",
+}
 DARK = {
     "bg": "#202020",
     "field": "#2d2d2d",
@@ -93,6 +105,10 @@ def _close(tx: Transmitter | None, ptt: Keyer | None, identify: bool = False) ->
             ptt.close()
 
 
+def _plural(n: int, noun: str) -> str:
+    return f"{n} {noun}{'' if n == 1 else 's'}"
+
+
 def _icon(accent: str) -> tk.PhotoImage:
     # a speech waveform with a thin steady data line under it
     img = tk.PhotoImage(width=32, height=32)
@@ -132,6 +148,14 @@ class App:
         self.settings_path = settings_path or _config.folder() / "config.toml"
         self.checking = False
         self.available: _updater.Release | None = None
+        self.inbox = Inbox()
+        # message parts held for the next over, the messages queued and not all gone out yet,
+        # the last one queued for Send again, and who the last to go out all the way was for
+        self.unsent: list[Part] = []
+        self.outbox: list[list[Part]] = []
+        self.last_message: list[Part] = []
+        self.sent_to: str | None = None
+        self.draft_parts: list[Part] = []
         settings_problem = None
         try:
             self.settings = _config.load(self.settings_path)
@@ -142,8 +166,8 @@ class App:
         root.title("undervoice")
         self._icon = _icon(self.c["accent"])
         root.iconphoto(True, self._icon)
-        root.minsize(760, 700)
-        root.geometry("900x820")
+        root.minsize(760, 820)
+        root.geometry("900x940")
         self._style()
         if self.dark:
             _dark_title_bar(root)
@@ -156,11 +180,12 @@ class App:
         outer = ttk.Frame(root, padding=(12, 10, 12, 0))
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(2, weight=1)
+        outer.rowconfigure(3, weight=1)
         self._station(outer).grid(row=0, column=0, sticky="ew")
         self._radio(outer).grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        self._receive(outer).grid(row=2, column=0, sticky="nsew", pady=(8, 0))
-        self._updates(outer).grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        self._messages(outer).grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        self._receive(outer).grid(row=3, column=0, sticky="nsew", pady=(8, 0))
+        self._updates(outer).grid(row=4, column=0, sticky="ew", pady=(8, 0))
         self._status_bar(root)
         self._apply_settings()
 
@@ -340,6 +365,105 @@ class App:
         ).grid(row=0, column=2, padx=(12, 0))
         return f
 
+    def _messages(self, parent: ttk.Frame) -> ttk.LabelFrame:
+        f = ttk.LabelFrame(parent, text="Messages", padding=(10, 6))
+        f.columnconfigure(1, weight=1)
+        f.rowconfigure(0, weight=1)
+        self._compose(f).grid(row=0, column=0, rowspan=2, sticky="nw", padx=(0, 12))
+        columns = ("time", "from", "to", "text")
+        # three rows asked for, stretched to the height of the box and buttons beside it
+        self.message_list = ttk.Treeview(f, columns=columns, show="headings", height=3)
+        for col, label, width, stretch in (
+            ("time", "Time", 50, False),
+            ("from", "From", 80, False),
+            ("to", "To", 80, False),
+            ("text", "Message", 200, True),
+        ):
+            self.message_list.heading(col, text=label, anchor="w")
+            self.message_list.column(col, width=width, stretch=stretch, anchor="w")
+        # bold too, since some accents are close to the text color
+        self.message_list.tag_configure(
+            "mine", foreground=self.c["accent"], font=(self.mono, 9, "bold")
+        )
+        self.message_list.grid(row=0, column=1, sticky="nsew")
+        scroll = ttk.Scrollbar(f, orient="vertical", command=self.message_list.yview)
+        scroll.grid(row=0, column=2, sticky="ns")
+        self.message_list.configure(yscrollcommand=scroll.set)
+        self.progress = ttk.Label(f)
+        self.progress.grid(row=1, column=1, columnspan=2, sticky="w", pady=(4, 0))
+        self._messages_file(f).grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        return f
+
+    def _compose(self, parent: ttk.LabelFrame) -> ttk.Frame:
+        f = ttk.Frame(parent)
+        to = ttk.Frame(f)
+        to.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        self.to_call = tk.StringVar()
+        self.to_call.trace_add("write", lambda *a: self._check_draft())
+        ttk.Label(to, text="To").grid(row=0, column=0, padx=(0, 8))
+        ttk.Entry(to, textvariable=self.to_call, width=12).grid(row=0, column=1)
+        ttk.Label(to, text="blank for everyone", style="Muted.TLabel").grid(
+            row=0, column=2, padx=(8, 0)
+        )
+        c = self.c
+        self.draft = tk.Text(
+            f,
+            height=3,
+            width=44,
+            wrap="word",
+            font="TkTextFont",
+            relief="flat",
+            borderwidth=0,
+            padx=6,
+            pady=4,
+            highlightthickness=1,
+            highlightbackground=c["line"],
+            highlightcolor=c["accent"],
+        )
+        if self.dark:
+            self.draft.configure(
+                background=c["field"],
+                foreground=c["ink"],
+                insertbackground=c["ink"],
+                selectbackground=c["accent"],
+                selectforeground="#000000",
+                inactiveselectbackground=c["line"],
+            )
+        self.draft.grid(row=1, column=0, sticky="ew")
+        self.draft.bind("<<Modified>>", self._draft_edited)
+        buttons = ttk.Frame(f)
+        buttons.grid(row=1, column=1, rowspan=2, sticky="n", padx=(8, 0))
+        self.send_msg_button = ttk.Button(buttons, text="Send", width=12, command=self.send_message)
+        self.again_button = ttk.Button(
+            buttons, text="Send again", width=12, command=self.send_again
+        )
+        self.cancel_button = ttk.Button(
+            buttons, text="Cancel", width=12, command=self.cancel_message
+        )
+        for row, button in enumerate((self.send_msg_button, self.again_button, self.cancel_button)):
+            button.grid(row=row, column=0, pady=(0, 4))
+        # an error wraps under the box, beside the buttons, instead of widening it
+        self.counter = ttk.Label(f, style="Muted.TLabel", wraplength=self.draft.winfo_reqwidth())
+        self.counter.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        return f
+
+    def _messages_file(self, parent: ttk.LabelFrame) -> ttk.Frame:
+        f = ttk.Frame(parent)
+        f.columnconfigure(1, weight=1)
+        saved = self.settings["messages"]
+        self.save_messages = tk.BooleanVar(value=bool(saved["save"]))
+        self.messages_path = str(saved["path"]) or str(_config.folder() / "messages.txt")
+        ttk.Checkbutton(f, text="Save messages to a text file", variable=self.save_messages).grid(
+            row=0, column=0, sticky="w"
+        )
+        self.messages_file = ttk.Label(f, text=self.messages_path, style="Muted.TLabel")
+        self.messages_file.grid(row=0, column=1, sticky="w", padx=(10, 10))
+        ttk.Button(f, text="Choose...", command=self.choose_messages_file).grid(row=0, column=2)
+        self.open_button = ttk.Button(f, text="Open", command=self.open_messages_file)
+        self.open_button.grid(row=0, column=3, padx=(8, 0))
+        self._show_open()
+        return f
+
     def _receive(self, parent: ttk.Frame) -> ttk.LabelFrame:
         f = ttk.LabelFrame(parent, text="Received", padding=(10, 6))
         f.columnconfigure(2, weight=1)
@@ -368,7 +492,7 @@ class App:
         self.meter_text.grid(row=0, column=2)
 
         columns = ("time", "call", "grid", "status", "snr")
-        self.log = ttk.Treeview(f, columns=columns, show="headings", height=8)
+        self.log = ttk.Treeview(f, columns=columns, show="headings", height=4)
         for col, label, width, stretch in (
             ("time", "UTC", 80, False),
             ("call", "Callsign", 100, False),
@@ -464,6 +588,7 @@ class App:
             "cw_id": self.cw_id.get(),
         }
         self.settings["receive"] = {"always": self.listen_always.get()}
+        self.settings["messages"] = {"save": self.save_messages.get(), "path": self.messages_path}
         u = self.settings["updater"]
         u["enabled"] = self.auto_update.get()
         u["channel"] = "beta" if self.channel.get() == CHANNELS[1] else "stable"
@@ -575,7 +700,39 @@ class App:
             if ok:
                 self.message_error.configure(text="")
         self.message_ok = ok
+        # messages go out under this callsign
+        self._check_draft()
+
+    def _draft_edited(self, event: tk.Event) -> None:
+        if self.draft.edit_modified():
+            self.draft.edit_modified(False)
+            self._check_draft()
+
+    def _check_draft(self) -> None:
+        text = normalize(self.draft.get("1.0", "end"))
+        self.draft_parts = []
+        error = False
+        if not text:
+            note = f"Up to {PART_LEN * MAX_PARTS} characters, {PART_LEN} to a frame."
+        elif not self.call.get().strip():
+            note = "Enter your callsign to send messages."
+        else:
+            try:
+                self.draft_parts = split(self.call.get(), self.to_call.get(), text, 0)
+                note = self._draft_note(len(text), len(self.draft_parts))
+            except ValueError as e:
+                note, error = str(e), True
+        self.counter.configure(text=note, foreground=self.c["tx"] if error else "")
         self._show_state()
+
+    def _draft_note(self, characters: int, frames: int) -> str:
+        mode = self._mode()
+        seconds = math.ceil(frames * frame_length(mode) / RATE)
+        doing = "transmitting" if mode == SUB else "talking"
+        return (
+            f"{_plural(characters, 'character')}, {_plural(frames, 'frame')}, "
+            f"about {seconds} s of {doing}"
+        )
 
     def _numbers(self) -> tuple[float, float, float, float | None] | None:
         try:
@@ -639,9 +796,31 @@ class App:
         )
         self.rx_button.configure(text="Stop listening" if self.listener else "Listen")
         self.rx_button.state(["!disabled"] if self.inputs else ["disabled"])
+        self._show_messages()
+
+    def _show_messages(self) -> None:
+        # parts only go out in an over, which needs a valid station and a sound card
+        sendable = self.message_ok and bool(self.outputs)
+        self.send_msg_button.state(["!disabled"] if sendable and self.draft_parts else ["disabled"])
+        again = sendable and bool(self.last_message) and self.last_message not in self.outbox
+        self.again_button.state(["!disabled"] if again else ["disabled"])
+        going = self.tx.frames.waiting if self.tx else []
+        self.cancel_button.state(["!disabled"] if going or self.unsent else ["disabled"])
+        self.progress.configure(text=self._progress(going))
+
+    def _progress(self, going: list[Part]) -> str:
+        if going:
+            p = going[0]
+            return f"Sending part {p.index + 1} of {p.total} to {p.to or 'everyone'}"
+        if self.unsent:
+            n = len(self.unsent)
+            return f"{_plural(n, 'part')} wait{'s' if n == 1 else ''} for your next over"
+        if self.sent_to is not None:
+            return f"Sent to {self.sent_to or 'everyone'}."
+        return ""
 
     def _typing(self) -> bool:
-        return isinstance(self.root.focus_get(), (ttk.Entry, tk.Entry, ttk.Checkbutton))
+        return isinstance(self.root.focus_get(), (ttk.Entry, tk.Entry, tk.Text, ttk.Checkbutton))
 
     def _space_down(self, event: tk.Event) -> str | None:
         if self._typing():
@@ -689,6 +868,8 @@ class App:
                 pause,
                 self._mode(),
             )
+            self.tx.frames.send(self.unsent)
+            self.unsent = []
             self.tx.key()
         except (SetupError, OSError) as e:
             self.say(str(e), error=True)
@@ -760,6 +941,7 @@ class App:
             if self._id_due():
                 tx, ptt = self.tx, self.ptt
                 self.tx, self.ptt = None, None
+                self._take_back(tx)
                 self.identifying = True
                 self.say("Sending your callsign in Morse before unkeying.")
                 self.helper = threading.Thread(target=self._identify, args=(tx, ptt), daemon=True)
@@ -801,12 +983,19 @@ class App:
         """Close the transmitter and PTT now. False, with the reason shown, if unkeying failed."""
         tx, ptt = self.tx, self.ptt
         self.tx, self.ptt = None, None
+        if tx:
+            self._take_back(tx)
         try:
             _close(tx, ptt)
         except (SetupError, OSError) as e:
             self.say(f"Could not unkey the radio: {e}", error=True)
             return False
         return True
+
+    def _take_back(self, tx: Transmitter) -> None:
+        """Keep the parts this over didn't send for the next one."""
+        self.unsent = tx.frames.cancel() + self.unsent
+        self._check_sent(tx.frames)
 
     def _choose_record(self) -> None:
         if not self.record.get():
@@ -830,6 +1019,7 @@ class App:
             self.toggle_rx()
 
     def _mode_changed(self) -> None:
+        self._check_draft()
         if self.listener:
             # a listener decodes one mode only, so listen again in the new one
             self.listener.stop()
@@ -863,23 +1053,138 @@ class App:
         )
         self._show_state()
 
+    def _received(self, h: Heard) -> None:
+        m = h.frame.message
+        if isinstance(m, Part):
+            self._received_part(m, datetime.fromtimestamp(h.when).astimezone())
+        else:
+            self.log.insert(
+                "",
+                0,
+                values=(
+                    time.strftime("%H:%M:%S", time.gmtime(h.when)),
+                    m.call,
+                    m.grid,
+                    m.status,
+                    f"{h.frame.snr_db:.1f} dB",
+                ),
+            )
+        self.empty.grid_remove()
+
+    def _received_part(self, part: Part, when: datetime) -> None:
+        m = self.inbox.add(part, when)
+        if m is None:
+            return
+        row = f"m{id(m)}"
+        values = (f"{m.first:%H:%M}", m.sender, m.to or "ALL", m.text)
+        mine = bool(m.to) and m.to == self.call.get().strip().upper()
+        if self.message_list.exists(row):
+            self.message_list.item(row, values=values)
+        else:
+            self.message_list.insert("", 0, iid=row, values=values, tags=["mine"] if mine else [])
+        if mine:
+            self.say(f"Message from {m.sender}.")
+        if m.complete:
+            m.logged = self._log(heard_line(m))
+
+    def send_message(self) -> None:
+        text = self.draft.get("1.0", "end")
+        try:
+            parts = split(self.call.get(), self.to_call.get(), text, random.randrange(64))
+        except ValueError as e:
+            self.say(str(e), error=True)
+            return
+        self.draft.delete("1.0", "end")
+        self._queue(parts)
+
+    def send_again(self) -> None:
+        # the same number, so a station that missed a part fills the gap
+        self._queue(self.last_message)
+
+    def _queue(self, parts: list[Part]) -> None:
+        self.last_message = parts
+        self.outbox.append(parts)
+        self.sent_to = None
+        if self.tx:
+            self.tx.frames.send(parts)
+        else:
+            self.unsent += parts
+        self._show_state()
+
+    def cancel_message(self) -> None:
+        dropped = len(self.unsent)
+        self.unsent = []
+        if self.tx:
+            dropped += len(self.tx.frames.cancel())
+            # a message whose last part went out just now has still gone
+            self._check_sent(self.tx.frames)
+        self.outbox = []
+        self.say(f"Cancelled {_plural(dropped, 'message part')} that had not gone out.")
+        self._show_state()
+
+    def _check_sent(self, frames: Frames) -> None:
+        while not frames.sent.empty():
+            part = frames.sent.get()
+            # parts go out in the order they were queued, so the oldest message finishes first
+            if self.outbox and part == self.outbox[0][-1]:
+                self._sent(self.outbox.pop(0))
+            self._show_state()
+
+    def _sent(self, parts: list[Part]) -> None:
+        when = datetime.now().astimezone()
+        sender, to = parts[0].sender, parts[0].to
+        text = "".join(p.text for p in parts)
+        self.message_list.insert("", 0, values=(f"{when:%H:%M}", sender, to or "ALL", text))
+        self.sent_to = to
+        self._log(line(when, sender, to, text))
+
+    def _log(self, text: str) -> bool:
+        """Add a line to the messages file when saving is on. True if it was written."""
+        if not self.save_messages.get():
+            return False
+        try:
+            append(self.messages_path, text)
+        except OSError as e:
+            self.say(f"Can't save messages to {self.messages_path}: {e.strerror or e}", error=True)
+            return False
+        self._show_open()
+        return True
+
+    def _show_open(self) -> None:
+        found = sys.platform == "win32" and os.path.isfile(self.messages_path)
+        self.open_button.state(["!disabled"] if found else ["disabled"])
+
+    def choose_messages_file(self) -> None:
+        current = Path(self.messages_path)
+        path = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Save messages to",
+            initialdir=str(current.parent),
+            initialfile=current.name,
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt")],
+            # messages are added to the end of the file, so an existing one is not replaced
+            confirmoverwrite=False,
+        )
+        if not path:
+            return
+        self.messages_path = path
+        self.messages_file.configure(text=path)
+        self.save_messages.set(True)
+        self._show_open()
+        self.say(f"Messages will be saved to {path}.")
+
+    def open_messages_file(self) -> None:
+        if sys.platform == "win32":
+            try:
+                os.startfile(self.messages_path)
+            except OSError as e:
+                self.say(f"Can't open {self.messages_path}: {e.strerror or e}", error=True)
+
     def _poll(self) -> None:
         if self.listener:
             while not self.listener.heard.empty():
-                h = self.listener.heard.get()
-                m = h.frame.message
-                self.log.insert(
-                    "",
-                    0,
-                    values=(
-                        time.strftime("%H:%M:%S", time.gmtime(h.when)),
-                        m.call,
-                        m.grid,
-                        m.status,
-                        f"{h.frame.snr_db:.1f} dB",
-                    ),
-                )
-                self.empty.grid_remove()
+                self._received(self.listener.heard.get())
             while not self.listener.notes.empty():
                 self.say(self.listener.notes.get(), error=True)
             self._draw_meter(self.mic_check.peak if self.mic_check else self.listener.peak)
@@ -891,6 +1196,7 @@ class App:
             self._draw_meter(self.mic_check.peak if self.mic_check else None)
         self._watch_mic_check()
         if self.tx:
+            self._check_sent(self.tx.frames)
             while not self.tx.sender.problems.empty():
                 self.say(f"Sound card: {self.tx.sender.problems.get()}", error=True)
             if not self.tx.active:
@@ -1060,6 +1366,9 @@ class App:
         if self.listener:
             self.listener.stop()
         self._release()
+        for m in self.inbox.messages:
+            if not m.complete and not m.logged:
+                m.logged = self._log(heard_line(m))
         self.root.destroy()
 
 

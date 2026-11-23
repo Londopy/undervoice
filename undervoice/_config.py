@@ -14,6 +14,8 @@ Settings = dict[str, dict[str, Any]]
 DEFAULTS: Settings = {
     "receive": {"always": True},
     "updater": {"enabled": True, "channel": "stable", "check_interval_h": 24, "last_check": 0},
+    # a blank path means messages.txt next to config.toml
+    "messages": {"save": False, "path": ""},
 }
 
 
