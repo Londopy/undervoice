@@ -14,6 +14,8 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 
 ### Changed
 
+- The default data level under the voice is -21 dB, down from -18 dB, after the first blind listening test heard the data at -18 dB. It still decodes every frame on a clean simplex or repeater path, but loses more on a noisy one; `--level -18` or **Data level** trades that back. The window moves to -21 dB too, unless you had set a level of your own.
+- `abx` tests -24, -21 and -18 dB by default.
 - The window puts Messages, Received and Updates on tabs and fits a 1366x768 screen.
 - The README states the sub-audible mode's rate, about 43 bit/s of payload, and softens claims that nothing measured: how far a receiver's filter takes the sub-audible signal down, the virtual cable check, and the Part 97 reading, which is now marked as an interpretation.
 

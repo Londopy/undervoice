@@ -1657,3 +1657,21 @@ def test_parts_in_a_recording_cut_short_go_again_next_over(window, monkeypatch, 
     assert wait_for(app, lambda: not app.sending)
     assert app.progress.cget("text") == "1 part waits for your next over"
     assert app.message_list.get_children() == ()
+
+
+@pytest.mark.parametrize(
+    "saved, shown",
+    [
+        ('level = "-18"\n', "-21"),
+        ('level = "-15"\n', "-15"),
+        ('level = "-18"\nlevel_default = -21.0\n', "-18"),
+    ],
+    ids=["old default follows", "own choice kept", "chosen after the change kept"],
+)
+def test_a_level_left_at_the_old_default_moves_to_the_new_one(window, saved, shown):
+    make, path = window
+    path.write_text(QUIET + "\n[radio]\n" + saved, encoding="utf-8")
+    app = make()
+    assert app.level.get() == shown
+    app.close()
+    assert make().level.get() == shown

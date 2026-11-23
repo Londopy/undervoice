@@ -330,7 +330,7 @@ def _parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("abx", help="blind listening test: can you hear the data?")
     p.add_argument("speech", nargs="*", help="WAV files of speech to build the trials from")
-    p.add_argument("--levels", type=level_list, default=level_list("-24,-18,-12"))
+    p.add_argument("--levels", type=level_list, default=level_list("-24,-21,-18"))
     p.add_argument("--trials", type=int, default=10, help="trials per level (default 10)")
     p.add_argument("--snr", type=float, default=40.0, help="simulated FM link SNR (default 40)")
     p.add_argument("--seed", type=int, help="fixes the trial order; leave out for a fresh one")

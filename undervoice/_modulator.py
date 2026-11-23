@@ -13,12 +13,12 @@ from ._lpc import HOP, ORDER, bandwidth, lpc
 from ._message import Message, Part
 from ._waveform import FRAME, frame_wave
 
-LEVEL_DB = -18.0
+LEVEL_DB = -21.0
 SHAPE = 0.5
 # how fast the remembered speech level falls during a pause: about 4 dB in ten seconds
 RECENT_FADE = 0.999
 # a message part counts as sent only if its frame carried at least this much data power re full
-# scale: speech at -27 dBFS clears it by about 20 dB, while silence, or mic hiss at -50 dBFS
+# scale: speech at -27 dBFS clears it by about 18 dB, while silence, or mic hiss at -50 dBFS
 # under a keyed but silent mic, falls short
 SENT_DB = -65.0
 

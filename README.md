@@ -20,7 +20,7 @@ its speaker audio. One frame carries a callsign, a grid square and 32 characters
 station, 24 characters a frame.
 
 This is a prototype. It works through the simulated FM channel below and through a sound card
-loopback. It has not been on the air yet, and nobody has done the blind listening test.
+loopback. It has not been on the air yet, and the blind listening test has one listener so far.
 
 ## Install
 
@@ -266,7 +266,7 @@ status = "MOBILE QRV"
 
 [radio]
 ptt = "COM5"            # the same values --ptt takes, or "" for VOX or keying by hand
-level = "-18"
+level = "-21"
 shape = "0.5"
 txdelay = "0.3"
 
@@ -296,7 +296,7 @@ leaves these recordings' speech 22 to 28 dB above it, depending on the recording
 10 dB less at "30 dB". Not one frame in any run decoded to the wrong message.
 
 **The spec's target, under 1% frame loss on a clean simplex path:** at the defaults (`--level
--18 --shape 0.5`, 40 dB, simplex), 480 frames out of 480 came through. That rules out a loss
+-21 --shape 0.5`, 40 dB, simplex), 480 frames out of 480 came through, as they did at -18 dB. That rules out a loss
 rate above 0.62% with 95% confidence (one-sided Clopper-Pearson, which `sweep` prints as
 `loss_95_upper_pct`). `pytest -m slow` repeats this measurement, and the Targets workflow runs
 it weekly.
@@ -326,9 +326,11 @@ rate under 1%.
 | -15 dB | 0% | 0% | 0% | 0% |
 
 With `--shape 0.9` the data follows the speech spectrum closely and needs about -18 dB even on
-a clean 40 dB path. The default, shape 0.5 at -18 dB, keeps a 3 dB margin on a good simplex or
-repeater path and sits between the two in how much it should stand out. Whether any of these
-can be heard is what the listening test has to answer.
+a clean 40 dB path. The default, shape 0.5 at -21 dB, still decodes every frame on a good
+simplex or repeater path, but has no margin left on a noisy one: on the 30 dB path it loses two
+frames in three, against one in five at -18 dB. It was -18 dB until the first listening test
+heard that level (below); `--level -18` or **Data level** in the window trades some of that
+quietness back for a noisy path, and **In pauses** helps there too.
 
 **Pauses.** The data follows the speech level, so it stops when you stop talking, and a frame
 that spans a long pause loses those symbols. `--pause-level` (or **In pauses** in the window)
@@ -568,7 +570,7 @@ undervoice abx speech/*.wav --save results.csv
 Each trial plays A and B, one with data and one without, both through the same simulated FM
 link with identical noise and gain so the data is the only difference, and X, which is one of
 them. Play each as often as you like (`a`, `b`, `x`), then answer `1` if X is A or `2` if X is
-B; `q` stops early. Trials at every level (`--levels`, default -24, -18 and -12 dB) are
+B; `q` stops early. Trials at every level (`--levels`, default -24, -21 and -18 dB) are
 shuffled together and the level is never shown. At the end it prints, per level, how many
 answers were right and the chance of doing that well by guessing; a level is "heard" when that
 chance is under 5% over at least 8 answers.
@@ -583,6 +585,13 @@ chance is under 5% over at least 8 answers.
   way.
 - Use headphones, and your own recordings of real QSO audio if you have them; the WAVs in
   `speech/` are in the source repository, not in the pip package.
+
+**First result.** One listener, 4 trials at each of -12, -15, -18, -21 and
+-24 dB through a 40 dB link: 12 of 12 right at -18 dB and louder, 3 of 4 at -21 dB and 1 of 4
+at -24 dB. Getting all 12 right by guessing has odds of about 1 in 4000, so the data was
+audible at -18 dB, then the default, to this listener. Four trials is too few to tell anything
+at -21 dB, the new default. More listeners and more trials at -21 and -18 dB are what's
+needed next.
 
 ## Testing on the air
 
@@ -661,9 +670,10 @@ care as any other text under 97.113 (no business, no obscenity).
 Everything above was measured in simulation or over a sound card loopback. What only people
 and radios can settle:
 
-- **Can listeners hear it?** The blind listening test has not been run with people yet. The
-  test kit ships with undervoice (`undervoice abx`, above); until results are in, the default
-  level is a guess backed only by the decode margins above, and **In pauses** stays off.
+- **Can listeners hear it?** One listener has taken the blind test (above) and heard the data
+  at -18 dB, so the default moved to -21 dB, where four trials can't settle it either way. The
+  test kit ships with undervoice (`undervoice abx`, above); until more results are in,
+  **In pauses** stays off.
 - **Radio to radio and through a repeater.** Not done yet. Real radios' audio filters,
   limiters and repeaters' processing may differ from the simulator.
 - **Hardware.** PTT keying (CM108, serial, rigctld), the Windows installers and the updater

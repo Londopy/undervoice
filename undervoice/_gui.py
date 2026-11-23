@@ -122,6 +122,17 @@ def _recording_parts(going: int, left: int) -> str:
     return text
 
 
+def _left_at_default(radio: dict[str, Any]) -> bool:
+    """Whether the saved data level is just the default of the version that saved it, so it
+    should follow a new default. Settings from before level_default was saved had -18."""
+    try:
+        level = float(radio["level"])
+        saved_default = float(radio.get("level_default", -18.0))
+    except (KeyError, ValueError):
+        return False
+    return level == saved_default != LEVEL_DB
+
+
 def _icon(accent: str) -> tk.PhotoImage:
     # a speech waveform with a thin steady data line under it
     img = tk.PhotoImage(width=32, height=32)
@@ -648,6 +659,8 @@ class App:
         for var, key in ((self.level, "level"), (self.shape, "shape"), (self.txdelay, "txdelay")):
             if key in radio:
                 var.set(str(radio[key]))
+        if _left_at_default(radio):
+            self.level.set(f"{LEVEL_DB:g}")
 
     def _save_settings(self) -> None:
         how = next((h for lb, h in self.keyers if lb == self.ptt_box.get()), None)
@@ -662,6 +675,7 @@ class App:
             "from_radio": self.from_radio.get(),
             "ptt": how or "",
             "level": self.level.get(),
+            "level_default": LEVEL_DB,
             "shape": self.shape.get(),
             "txdelay": self.txdelay.get(),
             "pause": self.pause.get(),
