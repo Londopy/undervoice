@@ -16,7 +16,8 @@ undervoice mixes a slow spread-spectrum data signal into your mic audio, well be
 and shaped to follow it, so it rides through an unmodified FM radio and a sound card interface
 (the same kind you would use for VARA FM). The receiving station pulls the frames back out of
 its speaker audio. One frame carries a callsign, a grid square and 32 characters of status every
-9.3 seconds, about 27 bit/s of payload.
+9.3 seconds, about 27 bit/s of payload. It can also send a short text message to another
+station, 24 characters a frame.
 
 This is a prototype. It works through the simulated FM channel below and through a sound card
 loopback. It has not been on the air yet, and nobody has done the blind listening test.
@@ -165,6 +166,41 @@ this mode), CTCSS and DCS must be off on that channel, and most repeaters strip 
 everything below 300 Hz, so in practice it is for simplex. Both ends must use the same mode;
 changing **Mode** in the window while it listens starts listening again in the new mode. The
 format is under Format below.
+
+### Messages
+
+Besides the station frame, undervoice can send a text message to one station, or to everyone
+when **To** is left blank. Messages are capitals, digits, space and `/ - . ? , ! ' :`, up to
+384 characters, 24 to a frame:
+
+```powershell
+undervoice tx --call W1AW --to N0CALL --msg "Meet you on 146.52 at 7?" --input "Microphone" --output "USB Audio"
+```
+
+The parts go out in order in place of the station frame, then the station frame carries on. That
+takes time: a frame is 9.3 s of talking under the voice (5.9 s of transmitting in sub-audible
+mode), so a 100-character message needs about 47 s of talk. Under the voice the data only goes
+while you speak, unless **In pauses** is set. A part cut off when you unkey goes again at the
+start of your next over. In the window, type in **Messages** and press **Send**; the counter
+shows how long it will take, and the parts wait for your next over if you aren't transmitting.
+**Send again** sends the same message under the same number, so a station that missed a part
+fills the gap, and **Cancel** drops what hasn't gone.
+
+`rx` and the window put the parts back together. A message heard in part shows `[...]` where a
+part is missing; messages to your callsign are highlighted in the window. Nothing acknowledges a
+message: the other station answers on voice, or with a message of its own. Stations on 0.5.0 or
+older ignore message frames.
+
+To keep a record, tick **Save messages to a text file** in the window, or give `tx` and `rx`
+`--messages messages.txt`. Each message, sent or heard, is added as one line:
+
+```text
+2026-11-20 07:12  W1AW > N0CALL  MEET YOU ON 146.52 AT 7?
+2026-11-20 07:15  N0CALL > W1AW  SEE YOU T[...]  (missing part 2 of 2)
+```
+
+A heard message is written when its last part arrives, or as it stands when `rx` stops or the
+window closes. A sent message is written once its last part has gone out.
 
 ### Keying the radio
 
@@ -341,6 +377,25 @@ right-padded with spaces and read as one base-40 number, first character most si
 A 6-character grid `AAnnaa` is
 `((((f1*18 + f2)*10 + n1)*10 + n2)*24 + s1)*24 + s2`, with fields and subsquares counted from A=0.
 A 4-character grid is `18662400 + ((f1*18 + f2)*10 + n1)*10 + n2`. No grid is `2^25 - 1`.
+A message part has version 1 and this layout instead:
+
+| Bits | Field |
+|---|---|
+| 2 | version, 1 |
+| 54 | from callsign, 10 characters |
+| 54 | to callsign, 10 characters, all spaces for everyone |
+| 6 | message number, 0 to 63, the same for every part of one message |
+| 4 | part index, from 0 |
+| 4 | number of parts minus 1 |
+| 132 | text, 24 characters |
+
+Message text uses the 40-character alphabet above followed by `?,!':`, 45 characters, read as
+one base-45 number the same way. Every part but the last carries exactly 24 characters, spaces
+included; the last is right-padded with spaces. A receiver joins parts with the same from
+callsign and message number; a part that doesn't fit the ones heard (other text for the same
+index, another number of parts or to callsign, or more than an hour later) starts a new
+message. Receivers ignore versions they don't know.
+
 The 32 payload bytes are followed by CRC-16/CCITT-FALSE (polynomial 0x1021, initial value
 0xFFFF) over them, big-endian, for 34 bytes in all.
 
@@ -351,7 +406,8 @@ coded bits, two per input bit with the 171 output first. Coded bit `i` is sent i
 
 **Frame.** 744 symbols (74400 samples, 9.3 s). Symbol `k` is a pilot when `k mod 4 == 0` and
 carries +1. The other 558 symbols, in order, are the data slots, carrying `+1` for a 0 bit and
-`-1` for a 1 bit. Frames repeat back to back for as long as there is audio.
+`-1` for a 1 bit. Frames repeat back to back for as long as there is audio: any message parts
+waiting to go, in order, then the station frame again and again.
 
 **Chips.** For each frame a 17-bit shift register starts at all ones. For each of the 74400
 samples, the chip is `+1` if bit 16 is 0 and `-1` if it is 1, then the register shifts left
@@ -566,6 +622,10 @@ the rules, not legal advice; check with ARRL or the FCC before relying on it.
   (or `tx` runs) is one over. Without CW ID, the window reminds you every 9 minutes while the
   station is in use; the command line has no reminder. Either way, still give your callsign at
   the end of the QSO.
+- **Messages are ordinary traffic.** They go out as plain text in a published format, with
+  both callsigns in clear, so anyone running undervoice can read them, as 97.113(a)(4) expects.
+  The usual content rules apply: no business (97.113(a)(3)), and a message on behalf of someone
+  who isn't a licensee is third-party traffic under 97.115.
 - **Repeaters.** 97.205(g) says the control operator of a repeater that inadvertently
   retransmits something that breaks the rules is not accountable for it, but the repeater's
   licensee can still limit who and what uses it (97.205(e)). Ask first.
@@ -587,7 +647,9 @@ and radios can settle:
 - **Hardware.** PTT keying (CM108, serial, rigctld), the Windows installers and the updater
   are tested in CI and against fakes of the hardware, not yet against a real interface.
 - **Pauses.** With **In pauses** off, a frame spanning long pauses can be lost on a noisy
-  path (see Results).
+  path (see Results). That goes for message parts too.
+- **Messages.** Nothing acknowledges a message, and a missed part only comes back if the sender
+  presses **Send again**.
 
 ## Building from source
 
