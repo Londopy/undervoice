@@ -904,7 +904,8 @@ class App:
         again = sendable and bool(self.last_message) and self.last_message not in self.outbox
         self.again_button.state(["!disabled"] if again else ["disabled"])
         going = self.tx.frames.waiting if self.tx else []
-        waiting = going or self.unsent or self.playing
+        # parts mixed into a recording that is playing can't be taken back out of it
+        waiting = (going or self.unsent) and not self.sending
         self.cancel_button.state(["!disabled"] if waiting else ["disabled"])
         self.progress.configure(text=self._progress(going))
 
@@ -1240,9 +1241,10 @@ class App:
         self._show_state()
 
     def cancel_message(self) -> None:
-        # parts already mixed into a playing recording go out with it, but no longer count
-        dropped = len(self.unsent) + len(self.playing)
-        self.unsent, self.playing = [], []
+        if self.sending:
+            return
+        dropped = len(self.unsent)
+        self.unsent = []
         if self.tx:
             dropped += len(self.tx.frames.cancel())
             # a message whose last part went out just now has still gone
@@ -1282,9 +1284,10 @@ class App:
         self._log(line(when, sender, to, text))
 
     def _log(self, text: str) -> bool:
-        """Add a line to the messages file when saving is on. True if it was written."""
+        """Add a line to the messages file when saving is on. False only if a write failed,
+        so it can be tried again."""
         if not self.save_messages.get():
-            return False
+            return True
         try:
             append(self.messages_path, text)
         except OSError as e:
@@ -1325,6 +1328,12 @@ class App:
                 self.say(f"Can't open {self.messages_path}: {e.strerror or e}", error=True)
 
     def _poll(self) -> None:
+        try:
+            self._poll_once()
+        finally:
+            self.root.after(100, self._poll)
+
+    def _poll_once(self) -> None:
         if self.listener:
             # read first: frames queued just before the input stopped are still to be shown
             running = self.listener.running
@@ -1352,7 +1361,6 @@ class App:
         if self._update_due():
             self.check_updates()
         self._remind_id()
-        self.root.after(100, self._poll)
 
     def _event(self, kind: str, detail: Any) -> None:
         if kind == "error":
@@ -1505,8 +1513,10 @@ class App:
 
     def close_window(self) -> None:
         """The window's close button: asks first when message parts have not gone out."""
-        going = self.tx.frames.waiting if self.tx else []
-        n = len(going) + len(self.unsent) + len(self.playing)
+        # unkeyed first, so the radio isn't left transmitting while the question is up; parts
+        # still to go come back to the queue
+        self.stop_sending()
+        n = len(self.unsent) + len(self.playing)
         if n and not messagebox.askyesno(
             "Close undervoice",
             f"{_plural(n, 'message part')} {'has' if n == 1 else 'have'} not gone out and "
@@ -1518,8 +1528,8 @@ class App:
         self.close()
 
     def close(self) -> None:
-        self._save_settings()
         self.stop_sending()
+        self._save_settings()
         if self.helper:
             # it holds PTT until the CW ID, PTT test or recording is over, and quitting first
             # could leave the radio keyed; the longest callsign takes 13.5 s in Morse

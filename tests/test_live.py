@@ -469,10 +469,7 @@ def test_tx_play_says_which_parts_a_short_recording_leaves_out(fake_sd, tmp_path
     args = ["--call", "W1AW", "--mode", "sub", "--msg", "X" * 60, "--messages", str(log)]
     assert main(["tx", "--play", str(wav), *args]) == 0
     err = capsys.readouterr().err
-    assert (
-        f"{wav} is too short or has too little speech for the whole message: parts 2, 3 of 3 won't go out"
-        in err
-    )
+    assert f"{wav} is too short for the whole message: parts 2, 3 of 3 won't go out" in err
     # it still plays, with the part that fits
     [(audio, rate, device, blocking)] = fake_sd.played
     assert [f.message.text for f in sub_decode(resample_poly(audio, 1, 6))] == ["X" * 24]
@@ -1675,3 +1672,70 @@ def test_a_level_left_at_the_old_default_moves_to_the_new_one(window, saved, sho
     assert app.level.get() == shown
     app.close()
     assert make().level.get() == shown
+
+
+def test_messages_heard_while_saving_was_off_are_not_written_later(window, monkeypatch, tmp_path):
+    import undervoice._gui as gui
+
+    make, _ = window
+    monkeypatch.setattr(gui, "Listener", IdleListener)
+    app = make()
+    app.mode.set(gui.MODE_NAMES["sub"])
+    app.toggle_rx()
+    hear(app, split("W1AW", "", "CQ", 9)[0])
+    assert wait_for(app, lambda: len(app.message_list.get_children()) == 1)
+    app.save_messages.set(True)
+    app.close()
+    log = Path(app.messages_path)
+    assert not log.exists() or log.read_text(encoding="utf-8") == ""
+
+
+def test_the_radio_is_unkeyed_before_asking_to_close(window, monkeypatch):
+    import undervoice._gui as gui
+
+    make, _ = window
+    app = make()
+    keyers = fake_ptt(app, monkeypatch)
+    app.call.set("W1AW")
+    app.toggle_tx()
+    write(app, TEXT)
+    app.send_message()
+    keyed_when_asked = []
+
+    def stay(title, message, **options):
+        keyed_when_asked.append(keyers[0].log[-1])
+        return False
+
+    monkeypatch.setattr(gui.messagebox, "askyesno", stay)
+    app.close_window()
+    assert keyed_when_asked and keyed_when_asked[0] is not True
+    assert app.tx is None
+    assert len(app.unsent) == 2
+
+
+def test_the_window_keeps_polling_after_one_poll_fails(window, monkeypatch):
+    make, _ = window
+    app = make()
+    scheduled = []
+    monkeypatch.setattr(app.root, "after", lambda ms, f: scheduled.append(f))
+
+    def broken():
+        raise RuntimeError("a poll step failed")
+
+    monkeypatch.setattr(app, "_poll_once", broken)
+    with pytest.raises(RuntimeError):
+        app._poll()
+    assert scheduled == [app._poll]
+
+
+def test_cancel_waits_while_a_recording_carries_parts(window):
+    make, _ = window
+    app = make()
+    app.call.set("W1AW")
+    write(app, TEXT)
+    app.send_message()
+    app.sending = True
+    app._show_state()
+    assert app.cancel_button.instate(["disabled"])
+    app.cancel_message()
+    assert len(app.unsent) == 2

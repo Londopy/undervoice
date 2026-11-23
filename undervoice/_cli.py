@@ -16,7 +16,7 @@ from ._audio import read_wav, write_wav
 from ._channel import fm_channel
 from ._message import MAX_PARTS, PART_LEN, Message, Part, split
 from ._messages import Inbox, heard_line
-from ._modes import MODES, VOICE, decode, mix
+from ._modes import MODES, SUB, VOICE, decode, mix
 from ._modulator import LEVEL_DB, SHAPE
 from ._ptt import Keyer, SetupError, open_keyer
 from ._sweep import sweep
@@ -88,8 +88,10 @@ def _left_out(args: argparse.Namespace, gone: list[Part], path: str) -> list[Par
     if left_out:
         noun = "part" if len(left_out) == 1 else "parts"
         numbers = ", ".join(str(p.index + 1) for p in left_out)
+        # sub-audible data doesn't depend on the speech, only on the length
+        why = "is too short" if args.mode == SUB else "is too short or has too little speech"
         print(
-            f"{path} is too short or has too little speech for the whole message: {noun} {numbers} "
+            f"{path} {why} for the whole message: {noun} {numbers} "
             f"of {len(args.parts)} won't go out",
             file=sys.stderr,
         )
