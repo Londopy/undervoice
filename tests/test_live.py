@@ -529,8 +529,9 @@ def window(fake_sd, monkeypatch, tmp_path, tk_root):
     tops = []
 
     def make():
+        # shown, not withdrawn: a hidden window's widgets are 1 px wide, and with wrapped text
+        # that narrow the Python 3.11 macOS build in CI hung inside update()
         tops.append(tk.Toplevel(tk_root))
-        tops[-1].withdraw()
         return App(tops[-1], path)
 
     yield make, path
