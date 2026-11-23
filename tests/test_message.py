@@ -1,8 +1,25 @@
 import binascii
 
+import numpy as np
 import pytest
 
-from undervoice._message import Message, Part, normalize, pack, split, unpack
+from undervoice._frames import Frames
+from undervoice._message import INDEX_BITS, PART_BITS, Message, Part, normalize, pack, split, unpack
+from undervoice._subaudible import FRAME as SUB_FRAME
+from undervoice._subaudible import Modulator as SubModulator
+from undervoice._subaudible import _chips
+from undervoice._subaudible import decode as sub_decode
+from undervoice._waveform import RATE
+
+
+def with_crc(value: int) -> bytes:
+    """A payload of 256 data bits as a sender would send it, CRC and all."""
+    data = value.to_bytes(32, "big")
+    return data + binascii.crc_hqx(data, 0xFFFF).to_bytes(2, "big")
+
+
+def bits(payload: bytes) -> int:
+    return int.from_bytes(payload[:32], "big")
 
 
 @pytest.mark.parametrize(
@@ -100,3 +117,41 @@ def test_payloads_of_unknown_versions_are_rejected():
         data[0] = (data[0] & 0x3F) | version << 6
         crc = binascii.crc_hqx(bytes(data[:32]), 0xFFFF).to_bytes(2, "big")
         assert unpack(bytes(data[:32]) + crc) is None
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_a_message_part_under_an_unknown_version_is_rejected(version):
+    part = Part("W1AW", "N0CALL", 37, 1, 3, "S THE WEATHER? FINE HERE")
+    body = bits(pack(part)) & ((1 << 254) - 1)
+    # the same fields under version 1 are a good part
+    assert unpack(with_crc(1 << 254 | body)) == part
+    assert unpack(with_crc(version << 254 | body)) is None
+
+
+@pytest.mark.parametrize(
+    "fields, error",
+    [
+        ({"ident": 64}, "message number 64"),
+        ({"ident": -1}, "message number -1"),
+        ({"total": 17, "text": "X" * 24}, "part 1 of 17"),
+        ({"index": 2, "total": 2}, "part 3 of 2"),
+        ({"total": 2, "text": "X" * 23}, "every part but the last carries 24 characters"),
+    ],
+    ids=["number 64", "number -1", "17 parts", "past the last", "short part"],
+)
+def test_rejects_parts_that_cannot_go_out(fields, error):
+    good = {"sender": "W1AW", "to": "N0CALL", "ident": 5, "index": 0, "total": 1, "text": "HI"}
+    with pytest.raises(ValueError, match=error):
+        Part(**{**good, **fields})
+
+
+def test_a_part_numbered_past_its_last_is_ignored_where_it_is_heard():
+    # part 3 of 2, which no sender of ours makes but a faulty one could
+    value = bits(pack(Part("W1AW", "N0CALL", 5, 1, 2, "HI")))
+    index = PART_BITS + INDEX_BITS
+    payload = with_crc(value & ~(0xF << index) | 2 << index)
+    assert unpack(payload) is None
+    # sent over and over in place of the station frame, it decodes to nothing
+    mod = SubModulator(Message("W1AW"))
+    mod.frames = Frames(Message("W1AW"), lambda station: _chips(payload))
+    assert sub_decode(mod.process(np.zeros(2 * SUB_FRAME + RATE))) == []

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ._message import Part
@@ -39,6 +39,14 @@ class Received:
         """The text with GAP where a part has not been heard."""
         return "".join(self.parts.get(i, GAP) for i in range(self.total))
 
+    @property
+    def gaps(self) -> str:
+        """The parts not heard, as "missing parts 2, 3 of 5", or "" for a whole message."""
+        if self.complete:
+            return ""
+        noun = "part" if len(self.missing) == 1 else "parts"
+        return f"missing {noun} {', '.join(str(i + 1) for i in self.missing)} of {self.total}"
+
     def fits(self, part: Part, when: datetime) -> bool:
         return (
             (self.sender, self.to, self.ident, self.total)
@@ -56,7 +64,7 @@ class Inbox:
 
     def add(self, part: Part, when: datetime | None = None) -> Received | None:
         """File a heard part. Returns its message if this changed it, None for a repeat."""
-        when = when or datetime.now().astimezone()
+        when = when or datetime.now(UTC)
         for m in reversed(self.messages):
             if (m.sender, m.ident) == (part.sender, part.ident):
                 if m.fits(part, when):
@@ -73,17 +81,18 @@ class Inbox:
         return m
 
 
+def stamp(when: datetime) -> str:
+    """A time as messages show it, in UTC: 2026-11-20 07:12Z."""
+    return f"{when.astimezone(UTC):%Y-%m-%d %H:%M}Z"
+
+
 def line(when: datetime, sender: str, to: str, text: str) -> str:
     """One message as a line of the log."""
-    return f"{when:%Y-%m-%d %H:%M}  {sender} > {to or 'ALL'}  {text}"
+    return f"{stamp(when)}  {sender} > {to or 'ALL'}  {text}"
 
 
 def heard_line(m: Received) -> str:
-    text = m.text
-    if not m.complete:
-        missing = ", ".join(str(i + 1) for i in m.missing)
-        noun = "part" if len(m.missing) == 1 else "parts"
-        text += f"  (missing {noun} {missing} of {m.total})"
+    text = m.text if m.complete else f"{m.text}  ({m.gaps})"
     return line(m.first, m.sender, m.to, text)
 
 
