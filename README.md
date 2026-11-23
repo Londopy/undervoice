@@ -183,8 +183,10 @@ undervoice tx --call W1AW --to N0CALL --msg "Meet you on 146.52 at 7?" --input "
 The parts go out in order in place of the station frame, then the station frame carries on. That
 takes time: a frame is 9.3 s of talking under the voice (5.9 s of transmitting in sub-audible
 mode), so a 100-character message needs about 47 s of talk. Under the voice the data only goes
-while you speak, unless **In pauses** is set. A part cut off when you unkey goes again at the
-start of your next over. In the window, type in **Messages** and press **Send**; the counter
+while you speak, unless **In pauses** is set. A part counts as sent only when its frame carried
+enough of your speech (data power at least -65 dB re full scale over the frame); one cut off
+when you unkey, or sent while you said nothing, goes again in the next frame or over. So key up
+and talk: keying without speaking sends nothing. In the window, type in **Messages** and press **Send**; the counter
 shows how long it will take, and the parts wait for your next over if you aren't transmitting.
 **Send again** sends the same message under the same number, so a station that missed a part
 fills the gap, and **Cancel** drops what hasn't gone.
@@ -195,11 +197,12 @@ message: the other station answers on voice, or with a message of its own. Stati
 older ignore message frames.
 
 To keep a record, tick **Save messages to a text file** in the window, or give `tx` and `rx`
-`--messages messages.txt`. Each message, sent or heard, is added as one line:
+`--messages messages.txt`. Each message, sent or heard, is added as one line, with the time in
+UTC:
 
 ```text
-2026-11-20 07:12  W1AW > N0CALL  MEET YOU ON 146.52 AT 7?
-2026-11-20 07:15  N0CALL > W1AW  SEE YOU T[...]  (missing part 2 of 2)
+2026-11-20 07:12Z  W1AW > N0CALL  MEET YOU ON 146.52 AT 7?
+2026-11-20 07:15Z  N0CALL > W1AW  SEE YOU AT THE PARK AT 7[...]MAST  (missing part 2 of 3)
 ```
 
 A heard message is written when its last part arrives, or as it stands when `rx` stops or the

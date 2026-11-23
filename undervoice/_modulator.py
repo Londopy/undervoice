@@ -17,6 +17,10 @@ LEVEL_DB = -18.0
 SHAPE = 0.5
 # how fast the remembered speech level falls during a pause: about 4 dB in ten seconds
 RECENT_FADE = 0.999
+# a message part counts as sent only if its frame carried at least this much data power re full
+# scale: speech at -27 dBFS clears it by about 20 dB, while silence, or mic hiss at -50 dBFS
+# under a keyed but silent mic, falls short
+SENT_DB = -65.0
 
 
 def _rms(x: np.ndarray) -> float:
@@ -25,7 +29,8 @@ def _rms(x: np.ndarray) -> float:
 
 class Modulator:
     """Adds data to speech, shaped like it and level_db below it, block by block.
-    Output lags input by one 20 ms hop. Message parts given to frames.send() go out next.
+    Output lags input by one 20 ms hop. Message parts given to frames.send() go out next; one
+    whose frame went out with too little speech to carry it (SENT_DB) goes again.
 
     With pause_db set, the data carries on through pauses at pause_db below the recent speech
     level instead of stopping, trading a faint hiss in the gaps for frames that survive them.
@@ -46,6 +51,7 @@ class Modulator:
             )
         self.frames = Frames(message, lambda payload: frame_wave(encode_bits(payload)))
         self.wave = np.zeros(FRAME)
+        self.carried = 0.0
         self.ratio = 10 ** (level_db / 20)
         self.pause_ratio = 0.0 if pause_db is None else 10 ** (pause_db / 20)
         self.recent = 0.0
@@ -60,6 +66,7 @@ class Modulator:
     def restart(self) -> None:
         """Start the next hop at the beginning of a frame, keeping the audio already queued."""
         self.pos = 0
+        self.carried = 0.0
         self.zi = np.zeros(ORDER)
         self.gain = 0.0
 
@@ -80,16 +87,23 @@ class Modulator:
             self.wave = self.frames.start()
         data = self.wave[self.pos : self.pos + HOP]
         self.pos = (self.pos + HOP) % FRAME
-        if self.pos == 0:
-            self.frames.finish()
         shaped, self.zi = lfilter([1.0], bandwidth(a, self.shape), data, zi=self.zi)
         level = _rms(speech)
         self.recent = max(level, self.recent * RECENT_FADE)
         target = max(self.ratio * level, self.pause_ratio * self.recent)
         gain = target / max(_rms(shaped), 1e-12)
-        ramp = np.linspace(self.gain, gain, HOP, endpoint=False)
+        added = np.linspace(self.gain, gain, HOP, endpoint=False) * shaped
         self.gain = gain
-        return speech + ramp * shaped
+        self.carried += float(added @ added)
+        if self.pos == 0:
+            self._end_frame()
+        return speech + added
+
+    def _end_frame(self) -> None:
+        # a part left unfinished goes again from the next frame's start()
+        if self.carried / FRAME >= 10 ** (SENT_DB / 10):
+            self.frames.finish()
+        self.carried = 0.0
 
 
 def encode(

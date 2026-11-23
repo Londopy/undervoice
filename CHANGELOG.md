@@ -9,6 +9,7 @@ All notable changes to undervoice are listed here. The format follows [Keep a Ch
 - Text messages to another station, or to everyone: up to 384 characters, sent 24 to a frame in place of the station frame and put back together on receive, with gaps shown where a part was missed. **Messages** in the window has a counter of how much talking a message needs, **Send again** to fill a receiver's gaps and **Cancel**; on the command line, `tx --to CALL --msg TEXT`, and `rx` and `decode` print the messages they hear. Stations on 0.5.0 or older ignore message frames.
 - **Save messages to a text file** in the window, or `--messages FILE` on `tx` and `rx`, adds every message sent and heard to a plain text file, one line each.
 - `tx` without `--cw-id` reminds you to give your callsign by voice.
+- `Part` and `split` in the Python API. A decoded `Frame.message` is now a `Message` or a `Part`.
 
 ### Changed
 

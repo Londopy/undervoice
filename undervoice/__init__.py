@@ -13,7 +13,7 @@ Basic use::
 from ._audio import read_wav, write_wav
 from ._channel import fm_channel
 from ._demodulator import Frame, decode
-from ._message import Message
+from ._message import Message, Part, split
 from ._modulator import Modulator, encode
 from ._waveform import FRAME, RATE
 
@@ -23,9 +23,11 @@ __all__ = [
     "Frame",
     "Message",
     "Modulator",
+    "Part",
     "decode",
     "encode",
     "fm_channel",
     "read_wav",
+    "split",
     "write_wav",
 ]
