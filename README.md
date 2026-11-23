@@ -185,10 +185,14 @@ undervoice tx --call W1AW --to N0CALL --msg "Meet you on 146.52 at 7?" --input "
 The parts go out in order in place of the station frame, then the station frame carries on. That
 takes time: a frame is 9.3 s of talking under the voice (5.9 s of transmitting in sub-audible
 mode), so a 100-character message needs about 47 s of talk. Under the voice the data only goes
-while you speak, unless **In pauses** is set. A part counts as sent only when its frame carried
-enough of your speech (data power at least -65 dB re full scale over the frame); one cut off
-when you unkey, or sent while you said nothing, goes again in the next frame or over. So key up
-and talk: keying without speaking sends nothing. In the window, type in **Messages** and press **Send**; the counter
+while you speak, unless **In pauses** is set. So under the voice a part counts as sent only
+when its frame carried data across most of it: a mean square of at least -65 dB re 1 (about
+-62 dB re a full-scale sine) over the frame, with 60% of its 0.62 s stretches within 20 dB of
+the strongest. Speech with ordinary pauses does that; a few seconds of talk and then silence
+doesn't, and doesn't decode either. A part that falls short, or is cut off when you unkey, goes
+again in the next frame or over, and a receiver that heard it the first time ignores the
+repeat. So key up and talk. With **In pauses** on, or in sub-audible mode, the data goes out
+whether you talk or not, and every frame counts. In the window, type in **Messages** and press **Send**; the counter
 shows how long it will take, and the parts wait for your next over if you aren't transmitting.
 **Send again** sends the same message under the same number, so a station that missed a part
 fills the gap, and **Cancel** drops what hasn't gone.
