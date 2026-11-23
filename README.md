@@ -1,31 +1,156 @@
-# undervoice
+<div align="center">
 
-[![CI](https://github.com/Londopy/undervoice/actions/workflows/ci.yml/badge.svg)](https://github.com/Londopy/undervoice/actions/workflows/ci.yml)
-[![changelog](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Londopy/undervoice/gh-pages/changelog-badge.json)](CHANGELOG.md)
-[![Release](https://img.shields.io/github/v/release/Londopy/undervoice)](https://github.com/Londopy/undervoice/releases/latest)
-[![PyPI](https://img.shields.io/pypi/v/undervoice)](https://pypi.org/project/undervoice/)
-[![Python](https://img.shields.io/pypi/pyversions/undervoice)](https://pypi.org/project/undervoice/)
-[![Downloads](https://img.shields.io/github/downloads/Londopy/undervoice/total)](https://github.com/Londopy/undervoice/releases)
-[![License](https://img.shields.io/github/license/Londopy/undervoice)](LICENSE)
-[![Windows](https://img.shields.io/badge/platform-Windows%2010%2B-0078D6)](#install)
+<img src="https://raw.githubusercontent.com/Londopy/undervoice/main/docs/images/icon.png" width="96" height="96" alt="The undervoice icon: white waveform bars above a line, on a blue square">
+
+# undervoice
 
 **Send your callsign, grid square and a short status during an ordinary FM voice QSO, without
 anyone stopping to send them.**
 
-undervoice mixes a slow spread-spectrum data signal into your mic audio, well below the speech
-and shaped to follow it, so it rides through an unmodified FM radio and a sound card interface
-(the same kind you would use for VARA FM). The receiving station pulls the frames back out of
-its speaker audio. One frame carries a callsign, a grid square and 32 characters of status every
-9.3 seconds, about 27 bit/s of payload. It can also send a short text message to another
-station, 24 characters a frame.
+[![CI](https://github.com/Londopy/undervoice/actions/workflows/ci.yml/badge.svg)](https://github.com/Londopy/undervoice/actions/workflows/ci.yml)
+[![Targets](https://github.com/Londopy/undervoice/actions/workflows/targets.yml/badge.svg)](https://github.com/Londopy/undervoice/actions/workflows/targets.yml)
+[![changelog](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Londopy/undervoice/gh-pages/changelog-badge.json)](CHANGELOG.md)
+[![Last commit](https://img.shields.io/github/last-commit/Londopy/undervoice)](https://github.com/Londopy/undervoice/commits/main)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Checked with mypy](https://www.mypy-lang.org/static/mypy_badge.svg)](https://mypy-lang.org/)
+[![License](https://img.shields.io/github/license/Londopy/undervoice)](LICENSE)
 
-This is a prototype. It works through the simulated FM channel below and through a sound card
-loopback. It has not been on the air yet, and the blind listening test has one listener so far.
+[![Release](https://img.shields.io/github/v/release/Londopy/undervoice)](https://github.com/Londopy/undervoice/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Londopy/undervoice/total)](https://github.com/Londopy/undervoice/releases)
+[![Scoop](https://img.shields.io/scoop/v/undervoice?bucket=https://github.com/Londopy/scoop-bucket)](https://github.com/Londopy/scoop-bucket)
+[![PyPI](https://img.shields.io/pypi/v/undervoice)](https://pypi.org/project/undervoice/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/undervoice)](https://pypi.org/project/undervoice/)
+[![Python](https://img.shields.io/pypi/pyversions/undervoice)](https://pypi.org/project/undervoice/)
+
+[![Status: prototype](https://img.shields.io/badge/status-prototype-E37400)](#known-gaps)
+[![Windows](https://img.shields.io/badge/platform-Windows%2010%2B-0078D6)](#install)
+[![Bands: 2 m and 70 cm](https://img.shields.io/badge/bands-2%20m%20%7C%2070%20cm-1F6FB2)](#rules-us-part-97)
+[![Mode: FM voice plus data](https://img.shields.io/badge/mode-FM%20voice%20%2B%20data-1F6FB2)](#how-it-hides)
+[![Part 97: format published](https://img.shields.io/badge/Part%2097-format%20published-1F6FB2)](#format)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Londopy/undervoice/main/docs/images/demo-dark.gif">
+  <img src="https://raw.githubusercontent.com/Londopy/undervoice/main/docs/images/demo-light.gif" alt="Animated demo of the undervoice window. A message to N0CALL is typed and the counter shows 52 characters, 3 frames, about 28 s of talking. After Transmit, the status counts Sending part 1 of 3, 2 of 3 and 3 of 3 to N0CALL, then Sent to N0CALL. Then a reply from N0CALL arrives, highlighted in the message list.">
+</picture>
+
+<sub>The real window with demo data, not an on-air capture: a message goes out to N0CALL in three
+parts under the voice, and the reply comes back.</sub>
+
+</div>
+
+## What it does
+
+- 📻 undervoice mixes a slow spread-spectrum data signal into your mic audio, well below the
+  speech and shaped to follow it, so it rides through an unmodified FM radio and a sound card
+  interface (the same kind you would use for VARA FM). The receiving station pulls the frames
+  back out of its speaker audio.
+- 📍 One frame carries a callsign, a grid square and 32 characters of status every 9.3 seconds,
+  about 27 bit/s of payload.
+- 💬 It can also send a short text message to another station, or to everyone: up to 384
+  characters, 24 to a frame.
+- 🤫 A sub-audible mode carries the same payload below 300 Hz instead. It is faster (a frame
+  every 5.9 s, about 43 bit/s of payload), but needs the radio's flat 9600-baud data port and,
+  in practice, simplex.
+- 🪟 Use it from a window or the command line. The Windows downloads are the window;
+  `pip install undervoice[live]` gives you both, on any platform with Python 3.11 or newer.
+- 📖 The whole on-air format is [published below](#format), with everything needed to build a
+  compatible encoder or decoder.
+
+> [!WARNING]
+> This is a prototype. It works through the [simulated FM channel](#results-so-far), and a
+> manual check through a virtual audio cable on one PC decoded every frame. It has not been on
+> the air yet, and the blind listening test has one listener so far. Testing radio to radio and
+> through a repeater is not done yet, and PTT keying is tested in CI and against fakes of the
+> hardware, not yet against a real interface. See [Known gaps](#known-gaps).
+
+## Contents
+
+- Start: [Quick start](#quick-start), [How it hides](#how-it-hides), [Install](#install)
+- Use: [Command line](#command-line), [The window](#the-window),
+  [Checking your setup](#checking-your-setup), [Two modes](#two-modes), [Messages](#messages),
+  [Keying the radio](#keying-the-radio), [Settings and updates](#settings-and-updates)
+- How well it works: [Results so far](#results-so-far), [The listening test](#the-listening-test),
+  [Known gaps](#known-gaps)
+- On the air: [Testing on the air](#testing-on-the-air), [Rules (US, Part 97)](#rules-us-part-97)
+- Under the hood: [Format](#format), [How the receiver works](#how-the-receiver-works),
+  [Design choices](#design-choices), [Prior art](#prior-art),
+  [Building from source](#building-from-source)
+- Project: [Contributing](#contributing), [Speech recordings](#speech-recordings),
+  [License](#license)
+
+## Quick start
+
+On Windows, run the installer from the
+[latest release](https://github.com/Londopy/undervoice/releases/latest)
+(`undervoice-<version>-setup-x64.exe`: per-user, no admin prompt), or use Scoop:
+
+```powershell
+scoop bucket add londopy https://github.com/Londopy/scoop-bucket
+scoop install londopy/undervoice
+```
+
+Either one gives you the window, from the Start menu, and nothing else: the `undervoice` commands
+below need the pip install. For the command line, on any platform with Python 3.11 or newer:
+
+```bash
+pip install undervoice[live]
+```
+
+Then, from the command line, find your sound cards, check your mic, and go:
+
+```powershell
+undervoice devices
+undervoice check --call W1AW --input "Headset"
+undervoice tx --call W1AW --grid FN31pr --status "MOBILE QRV" --input "Microphone" --output "USB Audio"
+undervoice rx --input "USB Audio"
+```
+
+| Command | What it does |
+|---|---|
+| `devices` | lists the sound cards, and the ways this machine can key the radio |
+| `check` | records about 11 seconds of you talking, says whether the microphone level is good, too quiet or clipping, and decodes your data from the recording. It plays the result on the default output, so if that is a VOX interface such as a SignaLink, it transmits. |
+| `tx` | takes your mic, adds the data and sends the result to the radio; key the radio with its own PTT or VOX, or let undervoice key it with [`--ptt`](#keying-the-radio) |
+| `rx` | prints each frame as it is heard |
+
+Prefer the window? Run `undervoice gui`. The details are in [Install](#install),
+[Command line](#command-line) and [The window](#the-window).
+
+<details>
+<summary>New to digital modes? A few words used here</summary>
+
+| Word | Meaning |
+|---|---|
+| PTT | push to talk: whatever keys the transmitter |
+| VOX | voice-operated keying; an interface such as a SignaLink keys the radio when it hears audio |
+| CAT | computer control of the radio over a serial link; undervoice uses it through Hamlib's `rigctld` |
+| CTCSS, DCS | the tones or codes below the voice that open a repeater's or receiver's squelch |
+| Over | one transmission, from keying up to unkeying |
+| QSO | a contact, the conversation between stations |
+| Simplex | radio to radio on one frequency, with no repeater |
+| Grid square | a Maidenhead locator, 4 or 6 characters such as `FN31pr` |
+| dBFS | decibels relative to the sound card's full scale |
+
+</details>
+
+## How it hides
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Londopy/undervoice/main/docs/images/spectrogram-dark.png">
+  <img src="https://raw.githubusercontent.com/Londopy/undervoice/main/docs/images/spectrogram-light.png" alt="Two spectrograms of the same six seconds of speech, 0 to 4000 Hz. Top, what goes out: speech with the data mixed in at -21 dB, where the bright bands of the voice stand out over a faint haze. Bottom, the data on its own: noise-like energy between about 300 and 3000 Hz that follows the shape of the voice, quieter, and drops away in the pauses.">
+</picture>
+
+The data sits in the speech's own band, so it goes wherever the voice goes, repeaters included.
+For every 20 ms of speech the transmitter shapes the data to follow the speech spectrum and
+scales it to `--level` dB relative to the speech (-21 dB by default). It follows the speech
+level, so it stops when you stop talking, unless **In pauses** keeps it going
+([Pauses](#pauses)).
 
 ## Install
 
-**Windows:** every [release](https://github.com/Londopy/undervoice/releases/latest) has the same
-downloads; pick whichever you like.
+### Windows
+
+Every [release](https://github.com/Londopy/undervoice/releases/latest) has the same downloads;
+pick whichever you like.
 
 | Download | What it is |
 |---|---|
@@ -37,17 +162,14 @@ downloads; pick whichever you like.
 | `*.torrent` / magnet links | Each download over BitTorrent, seeded from GitHub so it works with no peers. |
 
 The Windows downloads are the window (`undervoice gui`) built for 64-bit Windows 10 and 11;
-Windows on ARM runs them under emulation. For the command line, install with pip below.
+Windows on ARM runs them under emulation. For the command line, install
+[with pip](#any-platform-with-pip).
 
 **PowerShell one-liner:**
 
 ```powershell
 irm https://github.com/Londopy/undervoice/releases/latest/download/install.ps1 | iex
 ```
-
-Options: `-Msi`, `-Portable`, `-AllUsers`, `-Version 0.2.0`, `-NoShortcut`, `-DryRun`. To pass
-them, run the script as a block:
-`& ([scriptblock]::Create((irm https://github.com/Londopy/undervoice/releases/latest/download/install.ps1))) -Portable`
 
 **Scoop:**
 
@@ -56,17 +178,32 @@ scoop bucket add londopy https://github.com/Londopy/scoop-bucket
 scoop install londopy/undervoice
 ```
 
+<details>
+<summary>Script options, and the MSI for every user</summary>
+
+Options: `-Msi`, `-Portable`, `-AllUsers`, `-Version 0.2.0`, `-NoShortcut`, `-DryRun`. To pass
+them, run the script as a block:
+
+```powershell
+& ([scriptblock]::Create((irm https://github.com/Londopy/undervoice/releases/latest/download/install.ps1))) -Portable
+```
+
 **MSI for every user** (admin): `msiexec /i undervoice-<version>-x64.msi ALLUSERS=2 MSIINSTALLPERUSER=""`.
 Add `DESKTOPSHORTCUT=0` to skip the desktop icon.
 
-The downloads are not code-signed, so Windows SmartScreen may warn on first run (**More info**,
-then **Run anyway**). Every release ships `SHA256SUMS.txt`; check a download with:
+</details>
 
-```powershell
-(Get-FileHash .\<file> -Algorithm SHA256).Hash
-```
+> [!NOTE]
+> The downloads are not code-signed, so Windows SmartScreen may warn on first run (**More
+> info**, then **Run anyway**). Every release ships `SHA256SUMS.txt`; check a download with:
+>
+> ```powershell
+> (Get-FileHash .\<file> -Algorithm SHA256).Hash
+> ```
 
-**Any platform, with Python 3.11 or newer:**
+### Any platform, with pip
+
+With Python 3.11 or newer:
 
 ```bash
 pip install undervoice[live]
@@ -76,7 +213,20 @@ That gives the `undervoice` command and `undervoice-gui`, which opens the window
 console. `live` adds sound card and PTT support (sounddevice, hidapi, pyserial); leave it off
 if you only work with WAV files.
 
-## Usage
+## Command line
+
+| Command | What it does |
+|---|---|
+| `undervoice encode` | mixes data under the speech in a WAV file |
+| `undervoice decode` | prints the frames found in a WAV file |
+| `undervoice channel` | passes a WAV file through the simulated FM channel |
+| `undervoice sweep` | measures frame loss against data level through the FM channel |
+| `undervoice tx` | sends data under live mic audio, or under a WAV file |
+| `undervoice rx` | listens on a sound card and prints frames |
+| `undervoice check` | tests the microphone, and optionally PTT, before going on air ([Checking your setup](#checking-your-setup)) |
+| `undervoice devices` | lists the sound cards, and the ways this machine can key the radio |
+| `undervoice abx` | runs the blind listening test ([The listening test](#the-listening-test)) |
+| `undervoice gui` | opens the window ([The window](#the-window)) |
 
 Mix data under a recording and decode it again:
 
@@ -107,34 +257,51 @@ undervoice tx --play speech.wav --call W1AW --output "USB Audio"
 undervoice rx --input "USB Audio"
 ```
 
-`tx` takes your mic, adds the data and sends the result to the radio's audio input; key the radio
-with its own PTT or VOX, or let undervoice key it (below). `--play` sends a recording instead of the mic. `rx` prints
-each frame as it is heard, stamped in UTC, warns when the sound card input clips, and with
-`--record session.wav` also saves what it heard so you can run `decode` on it later. `--level`
-(dB relative to the speech) and `--shape` work on every command that sends; `--shape` must
-match on both ends. In the sub-audible mode (below) `--level` is relative to full scale
-instead, and `--shape` and `--pause-level` do nothing.
+- `tx` takes your mic, adds the data and sends the result to the radio's audio input; key the
+  radio with its own PTT or VOX, or let undervoice key it ([Keying the radio](#keying-the-radio)).
+  `--play` sends a recording instead of the mic.
+- `rx` prints each frame as it is heard, stamped in UTC, warns when the sound card input clips,
+  and with `--record session.wav` also saves what it heard so you can run `decode` on it later.
+- `--level` (dB relative to the speech) and `--shape` work on every command that sends;
+  `--shape` must match on both ends.
+- In the [sub-audible mode](#two-modes) `--level` is relative to full scale instead, and
+  `--shape` and `--pause-level` do nothing.
 
-### The window
+## The window
 
 ```powershell
 undervoice gui
 ```
 
-or `undervoice-gui`, which opens without a console window on Windows. Fill in your callsign,
-grid and status, pick the microphone, the sound card going to the radio and the one coming
-from it, and the PTT interface if you have one. **Transmit** keys the radio (through PTT, or
-you key it yourself) and mixes the data into your microphone audio until you press it again
-or hit Esc. Or hold **Space** to talk and let go to stop, like a PTT button (buttons take Enter
-instead of Space in this window). **Send a recording...** does the same with a WAV file. The window starts
-listening as soon as it opens (untick **Listen whenever undervoice is open** to start it by
-hand with **Listen**) and fills the table on the **Received** tab with each frame as it
-decodes, newest first; a tab you aren't looking at counts what has come in. The **Input** meter
-shows the level so you can set the radio's volume, and **Received** can record the session to
-a file. **Messages** and **Updates** are the other tabs. The window follows Windows' light or
-dark setting, and fits a 1366x768 screen.
+or `undervoice-gui`, which opens without a console window on Windows.
 
-### Checking your setup
+- Fill in your callsign, grid and status, pick the microphone, the sound card going to the radio
+  and the one coming from it, and the PTT interface if you have one.
+- **Transmit** keys the radio (through PTT, or you key it yourself) and mixes the data into your
+  microphone audio until you press it again or hit Esc. Or hold **Space** to talk and let go to
+  stop, like a PTT button (buttons take Enter instead of Space in this window).
+- **Send a recording...** does the same with a WAV file.
+- The window starts listening as soon as it opens (untick **Listen whenever undervoice is open**
+  to start it by hand with **Listen**) and fills the table on the **Received** tab with each
+  frame as it decodes, newest first; a tab you aren't looking at counts what has come in.
+- The **Input** meter shows the level so you can set the radio's volume, and **Received** can
+  record the session to a file.
+- **Messages** and **Updates** are the other tabs.
+- The window follows Windows' light or dark setting, and fits a 1366x768 screen.
+
+<details>
+<summary>Screenshot</summary>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Londopy/undervoice/main/docs/images/window-dark.png">
+  <img src="https://raw.githubusercontent.com/Londopy/undervoice/main/docs/images/window-light.png" alt="The undervoice window with demo data. Station: W1AW, grid FN31pr, status MOBILE ON 146.52. Radio: headset microphone, USB Audio CODEC to and from the radio, PTT set to VOX or keying by hand, data level -21, shape 0.5, TX delay 0.3, In pauses off, mode Under the voice. The Messages tab lists W1AW's message to N0CALL and N0CALL's reply, SEE YOU AT THE PARK AT 7. BRING THE YAGI AND THE MAST., which is shown in full below the list. The status bar reads Listening and Message from N0CALL.">
+</picture>
+
+The real window with demo data, not an on-air capture.
+
+</details>
+
+## Checking your setup
 
 Before going on the air, the window's **Test microphone** button (or `undervoice check`) records
 about 11 seconds of you talking, with the input meter showing the level, then:
@@ -148,31 +315,44 @@ about 11 seconds of you talking, with the input meter showing the level, then:
   transmits: make the PC's speakers the default output first.
 
 **Test PTT** (or `undervoice check --ptt ...`) keys the radio for 2 seconds through the PTT
-method you picked, so you can see the transmit light come on. It really transmits: use a dummy
-load or a clear frequency, and identify as usual.
+method you picked, so you can see the transmit light come on.
+
+> [!CAUTION]
+> It really transmits: use a dummy load or a clear frequency, and identify as usual.
 
 ```powershell
 undervoice check --call W1AW --input "Headset" --ptt COM5
 ```
 
-### Two modes
+## Two modes
 
-**Under the voice** (the default) is everything described above: data hidden in the speech's
-own band, so it goes wherever the voice goes, repeaters included.
+Everything above is the default mode, under the voice. The sub-audible mode carries the same
+payload a different way:
 
-**Sub-audible** (`--mode sub`, or **Mode** in the window) carries the same payload below
-300 Hz, where CTCSS tones live, at a constant level. A receiver's audio high-pass, there to
-keep CTCSS tones out of the speaker, cuts it down: the simulator's 4th-order 300 Hz high-pass
-takes it about 20 dB down. How far a real radio's filter takes it hasn't been measured. It is
-faster (a frame every 5.9 s, about 43 bit/s of payload) and never depends on the speech, so
-pauses cost nothing. The
-catches: it needs the radio's flat 9600-baud data port (set the D710G's data speed to 9600 for
-this mode), CTCSS and DCS must be off on that channel, and most repeaters strip or regenerate
-everything below 300 Hz, so in practice it is for simplex. Both ends must use the same mode;
-changing **Mode** in the window while it listens starts listening again in the new mode. The
-format is under Format below.
+| | Under the voice (the default) | Sub-audible (`--mode sub`, or **Mode** in the window) |
+|---|---|---|
+| Where the data goes | in the speech's own band | below 300 Hz, where CTCSS tones live |
+| Level | follows the speech | constant |
+| A frame every | 9.3 s of talking, about 27 bit/s of payload | 5.9 s of transmitting, about 43 bit/s of payload |
+| Pauses | the data stops when you stop talking, unless **In pauses** is on | cost nothing: it never depends on the speech |
+| Gets through | wherever the voice goes, repeaters included | the radio's flat 9600-baud data port; in practice, simplex |
 
-### Messages
+> [!IMPORTANT]
+> The catches with sub-audible:
+>
+> - It needs the radio's flat 9600-baud data port: on a D710G, set the data speed to 9600 for
+>   this mode, and back to 1200 for the default mode (see the tip in
+>   [Keying the radio](#keying-the-radio)).
+> - CTCSS and DCS must be off on that channel.
+> - Most repeaters strip or regenerate everything below 300 Hz, so in practice it is for simplex.
+> - A receiver's audio high-pass, there to keep CTCSS tones out of the speaker, cuts it down: the
+>   simulator's 4th-order 300 Hz high-pass takes it about 20 dB down. How far a real radio's
+>   filter takes it hasn't been measured.
+
+Both ends must use the same mode; changing **Mode** in the window while it listens starts
+listening again in the new mode. The format is under [Format](#format).
+
+## Messages
 
 Besides the station frame, undervoice can send a text message to one station, or to everyone
 when **To** is left blank. Messages are capitals, digits, space and `/ - . ? , ! ' :`, up to
@@ -182,25 +362,38 @@ when **To** is left blank. Messages are capitals, digits, space and `/ - . ? , !
 undervoice tx --call W1AW --to N0CALL --msg "Meet you on 146.52 at 7?" --input "Microphone" --output "USB Audio"
 ```
 
+In the window, type in **Messages** and press **Send**; the counter shows how long it will take,
+and the parts wait for your next over if you aren't transmitting.
+
+- **Send again** sends the same message under the same number, so a station that missed a part
+  fills the gap.
+- **Cancel** drops what hasn't gone.
+
+### How long it takes
+
 The parts go out in order in place of the station frame, then the station frame carries on. That
 takes time: a frame is 9.3 s of talking under the voice (5.9 s of transmitting in sub-audible
-mode), so a 100-character message needs about 47 s of talk. Under the voice the data only goes
-while you speak, unless **In pauses** is set. So under the voice a part counts as sent only
-when its frame carried data across most of it: a mean square of at least -65 dB re 1 (about
--62 dB re a full-scale sine) over the frame, with 60% of its 0.62 s stretches within 20 dB of
-the strongest. Speech with ordinary pauses does that; a few seconds of talk and then silence
-doesn't, and doesn't decode either. A part that falls short, or is cut off when you unkey, goes
-again in the next frame or over, and a receiver that heard it the first time ignores the
-repeat. So key up and talk. With **In pauses** on, or in sub-audible mode, the data goes out
-whether you talk or not, and every frame counts. In the window, type in **Messages** and press **Send**; the counter
-shows how long it will take, and the parts wait for your next over if you aren't transmitting.
-**Send again** sends the same message under the same number, so a station that missed a part
-fills the gap, and **Cancel** drops what hasn't gone.
+mode), so a 100-character message needs about 47 s of talk.
+
+Under the voice the data only goes while you speak, unless **In pauses** is set. So under the
+voice a part counts as sent only when your speech carried data across most of its frame (the
+exact rule is under Shaping in [Format](#format)). Speech with ordinary pauses does that; a few
+seconds of talk and then silence doesn't, and doesn't decode either. A part that falls short, or
+is cut off when you unkey, goes again in the next frame or over, and a receiver that heard it the
+first time ignores the repeat. The 47 s is time spent talking, so pauses stretch it.
+
+> [!TIP]
+> So key up and talk. With **In pauses** on, or in sub-audible mode, the data goes out whether
+> you talk or not, and every frame counts.
+
+### Receiving messages
 
 `rx` and the window put the parts back together. A message heard in part shows `[...]` where a
 part is missing; messages to your callsign are highlighted in the window. Nothing acknowledges a
 message: the other station answers on voice, or with a message of its own. Stations on 0.5.0 or
 older ignore message frames.
+
+### Keeping a log
 
 To keep a record, tick **Save messages to a text file** in the window, or give `tx` and `rx`
 `--messages messages.txt`. Each message, sent or heard, is added as one line, with the time in
@@ -214,7 +407,7 @@ UTC:
 A heard message is written when its last part arrives, or as it stands when `rx` stops or the
 window closes. A sent message is written once its last part has gone out.
 
-### Keying the radio
+## Keying the radio
 
 `--ptt` (or the PTT box in the window) keys the radio four ways, which between them cover the
 common interfaces. `undervoice devices` lists what this machine offers.
@@ -231,27 +424,30 @@ undervoice tx --play speech.wav --call W1AW --output "USB Audio" --ptt
 undervoice tx --call W1AW --input "Headset" --output "USB Audio" --ptt COM5
 ```
 
-With `--play` the radio is keyed for the whole recording. With the mic, press Enter to key and
-Enter again to unkey; each transmission starts a fresh frame, so none is cut off by unkeying
-mid-frame unless the transmission itself is shorter than 9.3 s. A fresh frame also starts
-whenever you start talking again after 3 s of silence, so overs keyed by the radio's own PTT
-or a VOX interface line up with frames too. `--txdelay` (default 0.3 s) is
-how long the radio gets to come up to power before audio starts. CM108 interfaces usually wire
-PTT to GPIO 3; use `--ptt-gpio` if yours differs. The serial port's lines are held low while it
-opens, so opening it does not key the radio. On Linux the user needs write access to the
-interface's `/dev/hidraw*` or serial device, usually through a udev rule or the `dialout`
-group.
+- With `--play` the radio is keyed for the whole recording.
+- With the mic, press Enter to key and Enter again to unkey; each transmission starts a fresh
+  frame, so none is cut off by unkeying mid-frame unless the transmission itself is shorter than
+  9.3 s.
+- A fresh frame also starts whenever you start talking again after 3 s of silence, so overs
+  keyed by the radio's own PTT or a VOX interface line up with frames too.
+- `--txdelay` (default 0.3 s) is how long the radio gets to come up to power before audio starts.
+- CM108 interfaces usually wire PTT to GPIO 3; use `--ptt-gpio` if yours differs.
+- The serial port's lines are held low while it opens, so opening it does not key the radio.
+- On Linux the user needs write access to the interface's `/dev/hidraw*` or serial device,
+  usually through a udev rule or the `dialout` group.
 
 VOX interfaces key on audio, so they key whenever the microphone carries sound and can drop
 out during long pauses (turn up the SignaLink's DELAY knob), and they clip the first moment
 of each transmission while they switch.
 
-When the radio is fed through its data port (the 6-pin mini-DIN on most mobiles), it ignores
-its own front-panel mic while transmitting, so speak into a mic on the PC. On radios with a
-1200/9600 data speed setting, use 1200: its receive audio is filtered and de-emphasized like
-the speaker audio undervoice expects.
+> [!TIP]
+> When the radio is fed through its data port (the 6-pin mini-DIN on most mobiles), it ignores
+> its own front-panel mic while transmitting, so speak into a mic on the PC. On radios with a
+> 1200/9600 data speed setting (the D710G has one), use 1200 for the default mode: its receive
+> audio is filtered and de-emphasized like the speaker audio undervoice expects. The sub-audible
+> mode needs 9600 instead; see [Two modes](#two-modes).
 
-### Settings and updates
+## Settings and updates
 
 The window remembers your station, sound cards, PTT and levels between runs, in `config.toml`:
 
@@ -261,6 +457,9 @@ The window remembers your station, sound cards, PTT and levels between runs, in 
 | Portable copy | `config.toml` next to the exe (a file named `portable` beside it switches this on) |
 | macOS | `~/Library/Application Support/undervoice/config.toml` |
 | Linux | `~/.config/undervoice/config.toml` |
+
+<details>
+<summary>An example config.toml</summary>
 
 ```toml
 [station]
@@ -285,12 +484,18 @@ path = ""               # blank for messages.txt next to config.toml
 next_number = 5         # the window numbers its messages 0 to 63 in turn
 ```
 
-The Updates tab checks GitHub Releases on that schedule and on **Check now**. When there is a
-newer version it offers **Download and install**; nothing installs until you click it. The
-download is checked against the release's `SHA256SUMS.txt` first and refused on a mismatch.
-An installed copy updates through the same installer it came from; a portable exe replaces
-itself. A copy installed with pip says so and leaves the update to
-`pip install -U undervoice[live]`.
+</details>
+
+The Updates tab checks GitHub Releases on the schedule in the `[updater]` section of
+`config.toml`, and on **Check now**:
+
+- When there is a newer version it offers **Download and install**; nothing installs until you
+  click it.
+- The download is checked against the release's `SHA256SUMS.txt` first and refused on a
+  mismatch.
+- An installed copy updates through the same installer it came from; a portable exe replaces
+  itself.
+- A copy installed with pip says so and leaves the update to `pip install -U undervoice[live]`.
 
 ## Results so far
 
@@ -300,10 +505,21 @@ leaves these recordings' speech 22 to 28 dB above it, depending on the recording
 10 dB less at "30 dB". Not one frame in any run decoded to the wrong message.
 
 **The spec's target, under 1% frame loss on a clean simplex path:** at the defaults (`--level
--21 --shape 0.5`, 40 dB, simplex), 480 frames out of 480 came through, as they did at -18 dB. That rules out a loss
-rate above 0.62% with 95% confidence (one-sided Clopper-Pearson, which `sweep` prints as
-`loss_95_upper_pct`). `pytest -m slow` repeats this measurement, and the Targets workflow runs
-it weekly.
+-21 --shape 0.5`, 40 dB, simplex), 480 frames out of 480 came through, as they did at -18 dB. That
+rules out a loss rate above 0.62% with 95% confidence (one-sided Clopper-Pearson, which `sweep`
+prints as `loss_95_upper_pct`). `pytest -m slow` repeats this measurement, and the Targets
+workflow runs it weekly.
+
+With `--shape 0.9` the data follows the speech spectrum closely and needs about -18 dB even on
+a clean 40 dB path. The default, shape 0.5 at -21 dB, still decodes every frame on a good
+simplex or repeater path, but has no margin left on a noisy one: on the 30 dB path it loses two
+frames in three, against one in five at -18 dB. It was -18 dB until the first listening test
+heard that level ([The listening test](#the-listening-test)); `--level -18` or **Data level** in
+the window trades some of that quietness back for a noisy path, and **In pauses** helps there
+too.
+
+<details>
+<summary>Frame loss by data level and path, under the voice (36 frames per cell)</summary>
 
 The tables below are smaller runs (36 frames per cell, four recordings sent three times each
 from random start points), good for comparing settings but too small on their own to show a
@@ -329,17 +545,23 @@ rate under 1%.
 | -18 dB | 0% | 14% | 0% | 0% |
 | -15 dB | 0% | 0% | 0% | 0% |
 
-With `--shape 0.9` the data follows the speech spectrum closely and needs about -18 dB even on
-a clean 40 dB path. The default, shape 0.5 at -21 dB, still decodes every frame on a good
-simplex or repeater path, but has no margin left on a noisy one: on the 30 dB path it loses two
-frames in three, against one in five at -18 dB. It was -18 dB until the first listening test
-heard that level (below); `--level -18` or **Data level** in the window trades some of that
-quietness back for a noisy path, and **In pauses** helps there too.
+</details>
 
-**Pauses.** The data follows the speech level, so it stops when you stop talking, and a frame
-that spans a long pause loses those symbols. `--pause-level` (or **In pauses** in the window)
-keeps it going through pauses at that many dB below the recent speech instead; it can't be
-above the data level itself. On the noisy 30 dB path, 96 frames per cell, from
+### Pauses
+
+The data follows the speech level, so it stops when you stop talking, and a frame that spans a
+long pause loses those symbols. `--pause-level` (or **In pauses** in the window) keeps it going
+through pauses at that many dB below the recent speech instead; it can't be above the data
+level itself.
+
+It is off by default because during a pause there is no speech to hide the data, so how high
+it can go before listeners hear it is for the listening test to settle. On a clean path it
+makes no difference, since frames already come through.
+
+<details>
+<summary>Frame loss with --pause-level on the noisy 30 dB path (96 frames per cell)</summary>
+
+On the noisy 30 dB path, 96 frames per cell, from
 `undervoice sweep "speech/*.wav" --levels=-21,-18 --trials 8 --snr 30 --seed 2` with each
 `--pause-level`; other seeds move these by a few percent, as 96 frames is not many:
 
@@ -350,19 +572,24 @@ above the data level itself. On the noisy 30 dB path, 96 frames per cell, from
 | -34 | 3% | 0% |
 | -28 | 0% | 0% |
 
-It is off by default because during a pause there is no speech to hide the data, so how high
-it can go before listeners hear it is for the listening test to settle. On a clean path it
-makes no difference, since frames already come through.
+</details>
 
-**Sub-audible mode**, through the simulated flat data-port path (`channel --path flat`), 20
-frames per cell; the level is the data's power relative to a full-scale sine:
+### Sub-audible mode
+
+<details>
+<summary>Frame loss by data level and SNR, through the simulated flat data-port path (20 frames per cell)</summary>
+
+Through the simulated flat data-port path (`channel --path flat`), 20 frames per cell; the
+level is the data's power relative to a full-scale sine:
 
 | Level | 40 dB | 30 dB | 20 dB | 10 dB |
 |---|---|---|---|---|
 | -48 dB | 0% | 0% | 90% | 100% |
 | -42 dB | 0% | 0% | 0% | 100% |
 | -36 dB | 0% | 0% | 0% | 0% |
-| -18 dB (default) | 0% | 0% | 0% | 0% |
+| -18 dB (the sub-audible default) | 0% | 0% | 0% | 0% |
+
+</details>
 
 The simulator has no FM threshold clicks, so the 10 dB column flatters it. At the default it
 also decoded every frame with a 1000 ppm clock offset, a large DC offset, mains hum up to
@@ -371,13 +598,166 @@ what breaks it: at 15% deviation, every standard tone from 107.2 to 192.8 Hz sto
 completely, and the lower and higher ones still cost the odd frame, so turn tones off for this
 mode. Through a repeater it decoded nothing.
 
+### Virtual cable check
+
 A manual check through a VB-Audio virtual cable, from `tx --play` to `rx`, decoded every frame
 sent. No log of it was kept, and a virtual cable is not a real sound card.
+
+## The listening test
+
+The spec's first target is that listeners cannot reliably tell speech with data from speech
+without it in a blind test. `undervoice abx` runs that test for the under-the-voice mode.
+Sub-audible data sits below what radios pass to their speakers, so an ABX test of that mode
+would need the flat audio of a data port.
+
+```powershell
+undervoice abx speech/*.wav --save results.csv
+```
+
+Each trial plays A and B, one with data and one without, both through the same simulated FM
+link with identical noise and gain so the data is the only difference, and X, which is one of
+them:
+
+| Key | What it does |
+|---|---|
+| `a`, `b`, `x` | plays A, B or X; play each as often as you like |
+| `1` | answers that X is A |
+| `2` | answers that X is B |
+| `q` | stops early |
+
+Trials at every level (`--levels`, default -24, -21 and -18 dB) are shuffled together and the
+level is never shown. At the end it prints, per level, how many answers were right and the
+chance of doing that well by guessing; a level is "heard" when that chance is under 5% over at
+least 8 answers.
+
+- `--pause-level` keeps the data going through the pauses in the clips at that level, which
+  is the test that settles how high **In pauses** can go.
+- `--save results.csv` appends the answers, so several people can add to one file;
+  `undervoice abx --score results.csv` reports on all of them. Keep one file per `--shape`,
+  `--snr` and `--pause-level`, since the file does not record them. A file that is not a
+  results file, or a folder that does not exist, is refused before the first trial.
+- `--export FOLDER` writes the clips as WAVs with an answer key, to play to a listener another
+  way.
+- Use headphones, and your own recordings of real QSO audio if you have them; the WAVs in
+  `speech/` are in the source repository, not in the pip package.
+
+### First result
+
+One listener, 4 trials at each of -12, -15, -18, -21 and -24 dB through a 40 dB link:
+
+| Level | Right answers |
+|---|---|
+| -18 dB and louder (-18, -15 and -12 dB) | 12 of 12 |
+| -21 dB | 3 of 4 |
+| -24 dB | 1 of 4 |
+
+Getting all 12 right by guessing has odds of about 1 in 4000, so the data was audible at
+-18 dB, then the default, to this listener. Four trials is too few to tell anything at -21 dB,
+the new default. More listeners and more trials at -21 and -18 dB are what's needed next.
+
+## Known gaps
+
+Everything above was measured in simulation, apart from one manual check through a virtual
+audio cable. What only people and radios can settle:
+
+- **Can listeners hear it?** One listener has taken the blind test
+  ([above](#the-listening-test)) and heard the data at -18 dB, so the default level under the voice moved to -21 dB,
+  where four trials can't settle it either way. The test kit ships with undervoice
+  (`undervoice abx`, above); until more results are in, **In pauses** stays off.
+- **Radio to radio and through a repeater.** Not done yet. Real radios' audio filters,
+  limiters and repeaters' processing may differ from the simulator.
+- **Hardware.** PTT keying (CM108, serial, rigctld), the Windows installers and the updater
+  are tested in CI and against fakes of the hardware, not yet against a real interface.
+- **Pauses.** With **In pauses** off, a frame spanning long pauses can be lost on a noisy
+  path (see [Pauses](#pauses) in the results). That goes for message parts too.
+- **Messages.** Nothing acknowledges a message, and a missed part only comes back if the sender
+  presses **Send again**.
+
+## Testing on the air
+
+**Simplex first**, at low power on a quiet 2 m or 70 cm simplex frequency, with your callsign
+by voice as usual:
+
+1. On the receiving station, set the radio's volume so speech peaks sit well below full scale
+   on the sound card, then start `undervoice rx --input "USB Audio" --record simplex1.wav`.
+   If it warns that the input clips, turn the input level down.
+2. On the sending station, `undervoice tx --play speech.wav --call <you> --output "USB Audio"`
+   with the radio keyed for the whole recording. A recording gives the same audio every run;
+   move to the live mic once that works.
+3. Each frame needs 9.3 s of transmission, so expect one frame per 9.3 s keyed. Note how many
+   came through, and keep the recording: `undervoice decode simplex1.wav` replays the session
+   offline, and the file is what to compare against the simulator if the radio does worse.
+4. Step `--level` down from -15 dB until frames start to drop. That gives the real margin to
+   compare with the simulated tables in [Results so far](#results-so-far).
+
+**Then through a repeater**, only with its owner's permission. Repeaters often run their own
+audio processing, so repeat the simplex steps through it, record on the receiving side, and
+compare loss at the same levels. A repeater that regenerates CTCSS or runs its own limiter is
+the case the simulator models least well. Tell the owner the format is published
+[here](#format) and that it carries your callsign in every frame.
+
+## Rules (US, Part 97)
+
+> [!IMPORTANT]
+> This is one reading of 47 CFR Part 97 as published on
+> [eCFR](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-97) in November 2026;
+> check the quoted sections there, since the rules change. Calling the emission F9W, and the
+> points drawn from 97.309(b) and 97.205(g), are interpretations, not FCC rulings. It is not
+> legal advice: check with ARRL or the FCC before relying on it.
+
+- **The bands allow it.** On 2 m above 144.1 MHz and on all of 70 cm, 97.305(c) authorizes
+  phone and data together ("MCW, phone, image, RTTY, data, test", plus SS on 70 cm). Phone and
+  data sub-bands there come from voluntary band plans, not from the rules.
+- **Mixed emissions are named.** 97.307(f)(5) (2 m) and (f)(6) (70 cm) allow "a RTTY, data or
+  multiplexed emission", and 97.307(f)(8) also authorizes data emissions whose designator has W
+  as the third symbol, the ITU symbol for a combination of information types. FM voice with
+  this data under it is F9W: 9 is the ITU second symbol for analog and digital channels
+  together, and (f)(8) lists it. The data is 80 baud against limits of
+  19.6 kbaud (2 m) and 56 kbaud (70 cm), and it stays inside the bandwidth of the FM voice it
+  rides on, as 97.307(f)(2) requires.
+- **The code is covered by publication.** 97.309(a)(4) counts a code as specified when its
+  "technical characteristics have been documented publicly". The [Format](#format) section is
+  that documentation. 97.309(b) separately allows unspecified codes on these bands as long as
+  they are not used to obscure meaning, and lets an FCC Regional Director require a record of
+  traffic, so keep the `--record` files.
+- **Nothing is hidden in meaning.** 97.113(a)(4) bans messages encoded to obscure their
+  meaning. The data is unencrypted, the format and code are public, and every frame carries
+  the callsign in clear. Inaudible is not the same as obscured, but this is the point a
+  skeptical reader is most likely to raise, so lead with the published format.
+- **Identify as usual.** 97.119 requires your callsign every 10 minutes and at the end, by CW
+  or phone. Nothing in it lets the callsign in the data count as identification. undervoice can
+  help:
+  - With `--cw-id` (or **CW ID before unkeying, when due** in the window), the first over and
+    every over that ends 9 minutes or more after the last ID end with your callsign in Morse
+    at 20 wpm before PTT drops, which 97.119(b)(1) accepts.
+  - The ID falls due a minute early because it can only go out as an over ends; when an over
+    runs on past 9 minutes, the window reminds you to say your callsign, or to stop so the CW
+    ID goes out.
+  - `tx --play --cw-id` always ends the recording with the ID.
+  - Keyed by VOX or by hand, all the time Transmit is on (or `tx` runs) is one over.
+  - Without CW ID, the window reminds you every 9 minutes while the station is in use; `tx`
+    reminds you once, when it starts.
+
+  Either way, still give your callsign at the end of the QSO.
+- **Messages are ordinary traffic.** They go out as plain text in a published format, with
+  both callsigns in clear, so anyone running undervoice can read them, as 97.113(a)(4) expects.
+  The usual content rules apply: no business (97.113(a)(3)), and a message on behalf of someone
+  who isn't a licensee is third-party traffic under 97.115.
+- **Repeaters.** 97.205(g) says the control operator of a repeater that inadvertently
+  retransmits something that breaks the rules is not accountable for it, but the repeater's
+  licensee can still limit who and what uses it (97.205(e)). Ask first.
+
+Still open, worth putting to ARRL: whether the FCC would treat this as phone, data or a
+combined emission in practice; and whether an unscreened 32-character status needs the same
+care as any other text under 97.113 (no business, no obscenity).
 
 ## Format
 
 Everything needed to build a compatible encoder or decoder is here, as Part 97 requires for a
 data emission.
+
+<details>
+<summary>Under the voice: audio, payload, message parts, coding, frame, chips and shaping</summary>
 
 **Audio.** 8000 samples per second, mono. Every symbol is 100 samples (80 baud).
 
@@ -442,9 +822,15 @@ speech's RMS for the block, ramping the gain linearly across the block. Silence 
 unless a pause level is set: then the target RMS is never less than `pause` dB below the
 recent speech level, where the recent level is the block RMS held at its peak and multiplied by
 0.999 every block. `shape` is 0.0 for flat data and approaches 1.0 as the data follows the
-speech spectrum more closely.
+speech spectrum more closely. A message part counts as sent, and leaves the sender's queue, only
+when the data in its frame had a mean square of at least -65 dB re 1 (about -62 dB re a
+full-scale sine) and 60% of the frame's fifteen 0.62 s stretches came within 20 dB of the
+strongest; otherwise it goes again in the next frame.
 
-### Format: sub-audible mode
+</details>
+
+<details>
+<summary>Sub-audible mode: audio, payload and coding, frame, phase changes, pulse, carrier, rate, level and speech</summary>
 
 **Audio.** 8000 samples per second, mono. Every symbol is 80 samples (100 baud).
 
@@ -481,8 +867,8 @@ second, which would spread the signal past 300 Hz into the voice, or more bits p
 which needs more signal-to-noise than a low constant level below the voice band has to give.
 
 **Level.** The data is scaled by `10^(level/20)`, which gives it the power of a sine of that
-peak amplitude relative to full scale. It stays constant and does not follow the speech. The
-default, -18 dB, has the power of a CTCSS tone at 12.6% of full deviation when full scale is
+peak amplitude relative to full scale. It stays constant and does not follow the speech. This
+mode's default, -18 dB, has the power of a CTCSS tone at 12.6% of full deviation when full scale is
 full deviation, and peaks at about 19%.
 
 **Speech.** Before the data is added, the speech goes through an 8th-order elliptic high-pass,
@@ -495,7 +881,12 @@ the radio's own mic filter and emphasis. The pre-emphasis is the bilinear transf
 gain at 1 kHz. It rises 6 dB per octave like a radio's 750 us network, within 0.2 dB of it
 from 300 Hz to 3 kHz (+9.4 dB at 3 kHz), then levels off, reaching +10.6 dB at 3.9 kHz.
 
+</details>
+
 ## How the receiver works
+
+<details>
+<summary>Under the voice, in five steps</summary>
 
 1. Whiten the received audio with its own short-term LPC filter, which takes out most of the
    speech while leaving the data correlatable.
@@ -511,6 +902,11 @@ from 300 Hz to 3 kHz (+9.4 dB at 3 kHz), then levels off, reaching +10.6 dB at 3
 5. De-interleave, Viterbi-decode, and keep the frame only if the CRC, version and every field
    check out.
 
+</details>
+
+<details>
+<summary>In the sub-audible mode</summary>
+
 In the sub-audible mode the receiver low-passes the audio at 275 Hz, mixes it down from
 150 Hz and runs it through the same pulse as a matched filter. Multiplying that output by its
 own conjugate one symbol earlier gives the phase change between two symbols at every sample,
@@ -520,29 +916,43 @@ is tried as a frame start. Symbol timing comes from the symbol-rate line in the 
 output, measured in 19 blocks and fitted with a straight line for the clock offset, and the
 real part of each phase change over the local noise is the soft value for the Viterbi decoder.
 
+</details>
+
 ## Design choices
 
-**Both variants from the plan are here.** The plan offered two ways to carry the data: under
-the voice (the default mode) and sub-audible below 300 Hz. Sub-audible is faster and immune to
-pauses but needs a flat data port, tone-free channels and, in practice, simplex; under the voice
-goes anywhere speech goes. The simulator agrees: through ordinary mic and speaker audio the
-sub-audible mode does not decode reliably at the default level, even on a single simplex link,
-and through a repeater (two links, four 300 Hz high-pass filters) it decodes nothing. It needs
-the flat data port.
+<details>
+<summary>Both variants from the plan are here</summary>
 
-**Long frames with pilots, not short frames with a sync word.** The original plan called for
-short frames with a sync word, because speech and squelch cut in and out. Hidden under speech
-the channel carries about 60 coded bits a second, so the 34-byte payload with its error
-correction needs about 9 seconds however it is cut up; short frames would mean splitting the
-callsign, grid and status across several frames, each with its own sync and CRC overhead.
-Instead one frame carries everything, and the job a sync word would do is spread through it:
-every fourth symbol is a known pilot, and the receiver finds the frame from all twelve blocks
-of pilots together. A single sync word at the start would be lost whenever an over began with a
-pause or under the squelch tail; the pilots still find the frame as long as enough of it was
-spoken. Dropouts inside the frame are handled by the interleaver, which spreads a burst of lost
-symbols thinly across the code, and by starting a fresh frame with each over.
+The plan offered two ways to carry the data: under the voice (the default mode) and sub-audible
+below 300 Hz. Sub-audible is faster and immune to pauses but needs a flat data port, tone-free
+channels and, in practice, simplex; under the voice goes anywhere speech goes. The simulator
+agrees: through ordinary mic and speaker audio the sub-audible mode does not decode reliably at
+the default level, even on a single simplex link, and through a repeater (two links, four 300 Hz
+high-pass filters) it decodes nothing. It needs the flat data port.
+
+</details>
+
+<details>
+<summary>Long frames with pilots, not short frames with a sync word</summary>
+
+The original plan called for short frames with a sync word, because speech and squelch cut in
+and out. Hidden under speech the channel carries about 60 coded bits a second, so the 34-byte
+payload with its error correction needs about 9 seconds however it is cut up; short frames
+would mean splitting the callsign, grid and status across several frames, each with its own
+sync and CRC overhead. Instead one frame carries everything, and the job a sync word would do
+is spread through it: every fourth symbol is a known pilot, and the receiver finds the frame
+from all twelve blocks of pilots together. A single sync word at the start would be lost
+whenever an over began with a pause or under the squelch tail; the pilots still find the frame
+as long as enough of it was spoken. Dropouts inside the frame are handled by the interleaver,
+which spreads a burst of lost symbols thinly across the code, and by starting a fresh frame
+with each over.
+
+</details>
 
 ## Prior art
+
+<details>
+<summary>CTCSS and DCS, MDC-1200, APRS, digital voice, and audio watermarking</summary>
 
 - **CTCSS and DCS.** Squelch tones and digital coded squelch (a fixed 23-bit code at 134.4
   bit/s) already ride under FM voice below 300 Hz. They prove a sub-audible channel works
@@ -560,134 +970,12 @@ symbols thinly across the code, and by starting a fresh frame with each over.
   mode; the difference here is a channel with FM's emphasis, limiting and noise, and a
   payload decoded live rather than checked against a known mark.
 
-## The listening test
-
-The spec's first target is that listeners cannot reliably tell speech with data from speech
-without it in a blind test. `undervoice abx` runs that test for the under-the-voice mode.
-Sub-audible data sits below what radios pass to their speakers, so an ABX test of that mode
-would need the flat audio of a data port.
-
-```powershell
-undervoice abx speech/*.wav --save results.csv
-```
-
-Each trial plays A and B, one with data and one without, both through the same simulated FM
-link with identical noise and gain so the data is the only difference, and X, which is one of
-them. Play each as often as you like (`a`, `b`, `x`), then answer `1` if X is A or `2` if X is
-B; `q` stops early. Trials at every level (`--levels`, default -24, -21 and -18 dB) are
-shuffled together and the level is never shown. At the end it prints, per level, how many
-answers were right and the chance of doing that well by guessing; a level is "heard" when that
-chance is under 5% over at least 8 answers.
-
-- `--pause-level` keeps the data going through the pauses in the clips at that level, which
-  is the test that settles how high **In pauses** can go.
-- `--save results.csv` appends the answers, so several people can add to one file;
-  `undervoice abx --score results.csv` reports on all of them. Keep one file per `--shape`,
-  `--snr` and `--pause-level`, since the file does not record them. A file that is not a
-  results file, or a folder that does not exist, is refused before the first trial.
-- `--export FOLDER` writes the clips as WAVs with an answer key, to play to a listener another
-  way.
-- Use headphones, and your own recordings of real QSO audio if you have them; the WAVs in
-  `speech/` are in the source repository, not in the pip package.
-
-**First result.** One listener, 4 trials at each of -12, -15, -18, -21 and
--24 dB through a 40 dB link: 12 of 12 right at -18 dB and louder, 3 of 4 at -21 dB and 1 of 4
-at -24 dB. Getting all 12 right by guessing has odds of about 1 in 4000, so the data was
-audible at -18 dB, then the default, to this listener. Four trials is too few to tell anything
-at -21 dB, the new default. More listeners and more trials at -21 and -18 dB are what's
-needed next.
-
-## Testing on the air
-
-**Simplex first**, at low power on a quiet 2 m or 70 cm simplex frequency, with your callsign
-by voice as usual:
-
-1. On the receiving station, set the radio's volume so speech peaks sit well below full scale
-   on the sound card, then start `undervoice rx --input "USB Audio" --record simplex1.wav`.
-   If it warns that the input clips, turn the input level down.
-2. On the sending station, `undervoice tx --play speech.wav --call <you> --output "USB Audio"`
-   with the radio keyed for the whole recording. A recording gives the same audio every run;
-   move to the live mic once that works.
-3. Each frame needs 9.3 s of transmission, so expect one frame per 9.3 s keyed. Note how many
-   came through, and keep the recording: `undervoice decode simplex1.wav` replays the session
-   offline, and the file is what to compare against the simulator if the radio does worse.
-4. Step `--level` down from -15 dB until frames start to drop. That gives the real margin to
-   compare with the simulated tables above.
-
-**Then through a repeater**, only with its owner's permission. Repeaters often run their own
-audio processing, so repeat the simplex steps through it, record on the receiving side, and
-compare loss at the same levels. A repeater that regenerates CTCSS or runs its own limiter is
-the case the simulator models least well. Tell the owner the format is published here and
-that it carries your callsign in every frame.
-
-## Rules (US, Part 97)
-
-This is one reading of 47 CFR Part 97 as published on [eCFR](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-97)
-in November 2026; check the quoted sections there, since the rules change. Calling the emission
-F9W, and the points drawn from 97.309(b) and 97.205(g), are interpretations, not FCC rulings.
-It is not legal advice: check with ARRL or the FCC before relying on it.
-
-- **The bands allow it.** On 2 m above 144.1 MHz and on all of 70 cm, 97.305(c) authorizes
-  phone and data together ("MCW, phone, image, RTTY, data, test", plus SS on 70 cm). Phone and
-  data sub-bands there come from voluntary band plans, not from the rules.
-- **Mixed emissions are named.** 97.307(f)(5) (2 m) and (f)(6) (70 cm) allow "a RTTY, data or
-  multiplexed emission", and 97.307(f)(8) also authorizes data emissions whose designator has W
-  as the third symbol, the ITU symbol for a combination of information types. FM voice with
-  this data under it is F9W: 9 is the ITU second symbol for analog and digital channels
-  together, and (f)(8) lists it. The data is 80 baud against limits of
-  19.6 kbaud (2 m) and 56 kbaud (70 cm), and it stays inside the bandwidth of the FM voice it
-  rides on, as 97.307(f)(2) requires.
-- **The code is covered by publication.** 97.309(a)(4) counts a code as specified when its
-  "technical characteristics have been documented publicly". The Format section above is that
-  documentation. 97.309(b) separately allows unspecified codes on these bands as long as they
-  are not used to obscure meaning, and lets an FCC Regional Director require a record of
-  traffic, so keep the `--record` files.
-- **Nothing is hidden in meaning.** 97.113(a)(4) bans messages encoded to obscure their
-  meaning. The data is unencrypted, the format and code are public, and every frame carries
-  the callsign in clear. Inaudible is not the same as obscured, but this is the point a
-  skeptical reader is most likely to raise, so lead with the published format.
-- **Identify as usual.** 97.119 requires your callsign every 10 minutes and at the end, by CW
-  or phone. Nothing in it lets the callsign in the data count as identification. undervoice can
-  help: with `--cw-id` (or **CW ID before unkeying, when due** in the window), the first over
-  and every over that ends 9 minutes or more after the last ID end with your callsign in Morse
-  at 20 wpm before PTT drops, which 97.119(b)(1) accepts. The ID falls due a minute early
-  because it can only go out as an over ends; when an over runs on past 9 minutes, the window
-  reminds you to say your callsign, or to stop so the CW ID goes out. `tx --play --cw-id`
-  always ends the recording with the ID. Keyed by VOX or by hand, all the time Transmit is on
-  (or `tx` runs) is one over. Without CW ID, the window reminds you every 9 minutes while the
-  station is in use; the command line has no reminder. Either way, still give your callsign at
-  the end of the QSO.
-- **Messages are ordinary traffic.** They go out as plain text in a published format, with
-  both callsigns in clear, so anyone running undervoice can read them, as 97.113(a)(4) expects.
-  The usual content rules apply: no business (97.113(a)(3)), and a message on behalf of someone
-  who isn't a licensee is third-party traffic under 97.115.
-- **Repeaters.** 97.205(g) says the control operator of a repeater that inadvertently
-  retransmits something that breaks the rules is not accountable for it, but the repeater's
-  licensee can still limit who and what uses it (97.205(e)). Ask first.
-
-Still open, worth putting to ARRL: whether the FCC would treat this as phone, data or a
-combined emission in practice; and whether an unscreened 32-character status needs the same
-care as any other text under 97.113 (no business, no obscenity).
-
-## Known gaps
-
-Everything above was measured in simulation or over a sound card loopback. What only people
-and radios can settle:
-
-- **Can listeners hear it?** One listener has taken the blind test (above) and heard the data
-  at -18 dB, so the default moved to -21 dB, where four trials can't settle it either way. The
-  test kit ships with undervoice (`undervoice abx`, above); until more results are in,
-  **In pauses** stays off.
-- **Radio to radio and through a repeater.** Not done yet. Real radios' audio filters,
-  limiters and repeaters' processing may differ from the simulator.
-- **Hardware.** PTT keying (CM108, serial, rigctld), the Windows installers and the updater
-  are tested in CI and against fakes of the hardware, not yet against a real interface.
-- **Pauses.** With **In pauses** off, a frame spanning long pauses can be lost on a noisy
-  path (see Results). That goes for message parts too.
-- **Messages.** Nothing acknowledges a message, and a missed part only comes back if the sender
-  presses **Send again**.
+</details>
 
 ## Building from source
+
+<details>
+<summary>Clone, install, test, and build the Windows downloads</summary>
 
 ```powershell
 git clone https://github.com/Londopy/undervoice
@@ -703,10 +991,13 @@ The Windows downloads are built by `.github/workflows/release.yml` with PyInstal
 with `dry_run` from the Actions tab (`gh workflow run release.yml -f dry_run=true`) to build
 everything without publishing.
 
+</details>
+
 ## Contributing
 
 Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Anything that
-changes what goes on air has to update the Format section above in the same pull request.
+changes what goes on air has to update the [Format](#format) section above in the same pull
+request.
 
 ## Speech recordings
 
