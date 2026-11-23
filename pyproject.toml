@@ -75,3 +75,5 @@ pythonpath = ["."]
 # the target checks take minutes; .github/workflows/targets.yml runs them with -m slow
 addopts = "-m 'not slow'"
 markers = ["slow: measures a spec target over hundreds of frames"]
+# a test stuck this long prints every thread's stack, so a hang in CI shows where it is
+faulthandler_timeout = 120
