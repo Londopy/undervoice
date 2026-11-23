@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+from scipy.signal import welch
 import pytest
 
 from undervoice import RATE, Message, fm_channel, read_wav
@@ -132,3 +133,9 @@ def test_frame_loss_through_data_port():
     print(f"\nframe loss through the data port, {sent} frames per cell (mean frame SNR)")
     print("\n".join(rows))
     assert wrong == 0
+
+
+def test_nothing_above_300_hz_comes_within_55_db_of_the_peak():
+    data = encode(np.zeros(RATE * 60), MSG)
+    f, p = welch(data, RATE, nperseg=8192)
+    assert 10 * np.log10(p[f >= 300].max() / p.max()) < -55

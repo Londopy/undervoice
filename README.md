@@ -159,8 +159,11 @@ undervoice check --call W1AW --input "Headset" --ptt COM5
 own band, so it goes wherever the voice goes, repeaters included.
 
 **Sub-audible** (`--mode sub`, or **Mode** in the window) carries the same payload below
-300 Hz, where CTCSS tones live, at a constant level that listeners' radios filter out. It is
-faster (a frame every 5.9 s) and never depends on the speech, so pauses cost nothing. The
+300 Hz, where CTCSS tones live, at a constant level. A receiver's audio high-pass, there to
+keep CTCSS tones out of the speaker, cuts it down: the simulator's 4th-order 300 Hz high-pass
+takes it about 20 dB down. How far a real radio's filter takes it hasn't been measured. It is
+faster (a frame every 5.9 s, about 43 bit/s of payload) and never depends on the speech, so
+pauses cost nothing. The
 catches: it needs the radio's flat 9600-baud data port (set the D710G's data speed to 9600 for
 this mode), CTCSS and DCS must be off on that channel, and most repeaters strip or regenerate
 everything below 300 Hz, so in practice it is for simplex. Both ends must use the same mode;
@@ -352,8 +355,8 @@ what breaks it: at 15% deviation, every standard tone from 107.2 to 192.8 Hz sto
 completely, and the lower and higher ones still cost the odd frame, so turn tones off for this
 mode. Through a repeater it decoded nothing.
 
-Over a real sound card (a VB-Audio virtual cable from `tx --play` to `rx`) every frame came
-through.
+A manual check through a VB-Audio virtual cable, from `tx --play` to `rx`, decoded every frame
+sent. No log of it was kept, and a virtual cable is not a real sound card.
 
 ## Format
 
@@ -452,7 +455,14 @@ overlap.
 
 **Carrier.** The baseband signal times `cos(2 pi * 150 * n / 8000)`, with `n` counting samples
 from the start of the transmission; the receiver does not need its phase. The signal sits
-between 50 and 250 Hz, and everything above 300 Hz is at least 55 dB down.
+between 50 and 250 Hz, and its spectrum everywhere above 300 Hz is at least 55 dB below its
+peak (a test checks this).
+
+**Rate.** 100 symbols a second on the air, close to the 134 bit/s that DCS sends in the same
+band. The rate 1/2 code and the 31-symbol sync word leave 256
+payload bits every 5.89 s, about 43 bit/s. Going faster would mean either more symbols a
+second, which would spread the signal past 300 Hz into the voice, or more bits per symbol,
+which needs more signal-to-noise than a low constant level below the voice band has to give.
 
 **Level.** The data is scaled by `10^(level/20)`, which gives it the power of a sine of that
 peak amplitude relative to full scale. It stays constant and does not follow the speech. The
@@ -589,8 +599,10 @@ that it carries your callsign in every frame.
 
 ## Rules (US, Part 97)
 
-Read against the current eCFR text of 47 CFR Part 97 in November 2026. This is a reading of
-the rules, not legal advice; check with ARRL or the FCC before relying on it.
+This is one reading of 47 CFR Part 97 as published on [eCFR](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-97)
+in November 2026; check the quoted sections there, since the rules change. Calling the emission
+F9W, and the points drawn from 97.309(b) and 97.205(g), are interpretations, not FCC rulings.
+It is not legal advice: check with ARRL or the FCC before relying on it.
 
 - **The bands allow it.** On 2 m above 144.1 MHz and on all of 70 cm, 97.305(c) authorizes
   phone and data together ("MCW, phone, image, RTTY, data, test", plus SS on 70 cm). Phone and

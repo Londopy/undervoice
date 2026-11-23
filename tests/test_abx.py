@@ -28,7 +28,8 @@ def speech():
 
 @pytest.fixture(scope="module")
 def trials(speech):
-    # 30 dB leaves the hiss plainly audible, so different noise on A and B could not hide
+    # at 30 dB the noise is louder than the data at these levels (README, Results), so A and B
+    # getting different noise would show in test_a_and_b_differ_only_by_the_data
     return make_trials([speech], LEVELS, 0.5, 30.0, 10, np.random.default_rng(1))
 
 
