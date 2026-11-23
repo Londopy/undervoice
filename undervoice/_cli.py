@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import random
 import sys
 import time
 from contextlib import AbstractContextManager, nullcontext
@@ -13,8 +14,9 @@ import numpy as np
 from . import _abx, _check, _live
 from ._audio import read_wav, write_wav
 from ._channel import fm_channel
-from ._message import Message
-from ._modes import MODES, VOICE, decode, encode
+from ._message import MAX_PARTS, PART_LEN, Message, Part, split
+from ._messages import Inbox, heard_line
+from ._modes import MODES, VOICE, decode, encode, frame_length
 from ._modulator import LEVEL_DB, SHAPE
 from ._ptt import Keyer, SetupError, open_keyer
 from ._sweep import sweep
@@ -66,6 +68,18 @@ def _check_pause(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
     level = min(args.levels) if hasattr(args, "levels") else args.level
     if pause > level:
         parser.error(f"--pause-level ({pause:g} dB) can't be above the data level ({level:g} dB)")
+
+
+def _parts(parser: argparse.ArgumentParser, args: argparse.Namespace) -> list[Part]:
+    text, to = getattr(args, "msg", None), getattr(args, "to", None)
+    if text is None:
+        if to is not None:
+            parser.error("--to needs --msg, the message to send")
+        return []
+    try:
+        return split(args.call, to or "", text, random.randrange(64))
+    except ValueError as e:
+        parser.error(str(e))
 
 
 def _check_setup(args: argparse.Namespace) -> None:
@@ -142,6 +156,18 @@ def _add_message(p: argparse.ArgumentParser) -> None:
     p.add_argument("--status", default="", help="up to 32 characters of A-Z 0-9 / - . and space")
 
 
+def _add_text(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--to", metavar="CALL", help="callsign the --msg is for; leave out to send it to everyone"
+    )
+    p.add_argument(
+        "--msg",
+        metavar="TEXT",
+        help=f"text message to send ahead of the station frame: up to {PART_LEN * MAX_PARTS} "
+        f"characters of A-Z 0-9 / - . ? , ! ' : and space, {PART_LEN} to a frame",
+    )
+
+
 def _add_mode(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--mode",
@@ -186,6 +212,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("input")
     p.add_argument("output")
     _add_message(p)
+    _add_text(p)
     _add_tuning(p)
     _add_mode(p)
 
@@ -238,6 +265,7 @@ def _parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("tx", help="send data under live mic audio, or under a WAV file")
     _add_message(p)
+    _add_text(p)
     _add_tuning(p)
     _add_mode(p)
     p.add_argument("--play", metavar="WAV", help="play this recording instead of using the mic")
@@ -268,12 +296,23 @@ def _parser() -> argparse.ArgumentParser:
         "with the mic, at the end of the first over and of any that ends 9 minutes or more "
         "after the last ID (without --ptt the whole run is one over)",
     )
+    p.add_argument(
+        "--messages",
+        metavar="FILE",
+        help="add the --msg to this text file once all of it has gone out",
+    )
 
     p = sub.add_parser("rx", help="listen on a sound card and print frames")
     _add_tuning(p, level=False)
     _add_mode(p)
     p.add_argument("--input", type=_device, help="radio audio device (number or name)")
     p.add_argument("--record", metavar="WAV", help="also save the received audio to this file")
+    p.add_argument(
+        "--messages",
+        metavar="FILE",
+        help="add each message heard to this text file, as it completes or, if parts are "
+        "missing, as it stands when rx stops",
+    )
 
     p = sub.add_parser("abx", help="blind listening test: can you hear the data?")
     p.add_argument("speech", nargs="*", help="WAV files of speech to build the trials from")
@@ -316,6 +355,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     _check_pause(parser, args)
+    args.parts = _parts(parser, args)
     try:
         return _run(args)
     except SetupError as e:
@@ -328,12 +368,22 @@ def _run(args: argparse.Namespace) -> int:
     if args.command == "encode":
         recording = _read(args.input)
         message = _message(args)
-        mixed = encode(args.mode, recording, message, args.level, args.shape, args.pause_level)
+        mixed = encode(
+            args.mode, recording, message, args.level, args.shape, args.pause_level, args.parts
+        )
         write_wav(args.output, mixed)
     elif args.command == "decode":
         frames = decode(args.mode, _read(args.input), args.shape)
+        inbox = Inbox()
         for f in frames:
             print(f"{f.start / RATE:8.2f} s  {f.message}  (snr {f.snr_db:.1f} dB)")
+            if isinstance(f.message, Part):
+                m = inbox.add(f.message)
+                if m is not None and m.complete:
+                    print(f"message: {heard_line(m)}")
+        for m in inbox.messages:
+            if not m.complete:
+                print(f"message: {heard_line(m)}")
         if not frames:
             print("no frames decoded")
             return 1
@@ -370,6 +420,15 @@ def _run(args: argparse.Namespace) -> int:
             if args.play:
                 recording = _read(args.play)
                 print(f"playing {len(recording) / RATE:.1f} s with {message}")
+                left_out = args.parts[len(recording) // frame_length(args.mode) :]
+                if left_out:
+                    noun = "part" if len(left_out) == 1 else "parts"
+                    numbers = ", ".join(str(p.index + 1) for p in left_out)
+                    print(
+                        f"{args.play} is too short for the whole message: {noun} {numbers} "
+                        f"of {len(args.parts)} won't go out",
+                        file=sys.stderr,
+                    )
                 _live.play(
                     recording,
                     message,
@@ -381,7 +440,10 @@ def _run(args: argparse.Namespace) -> int:
                     args.pause_level,
                     args.cw_id,
                     args.mode,
+                    args.parts,
                 )
+                if args.parts and not left_out:
+                    _live.log_sent(args.messages, args.parts)
             else:
                 _live.transmit(
                     message,
@@ -394,9 +456,11 @@ def _run(args: argparse.Namespace) -> int:
                     args.pause_level,
                     args.cw_id,
                     args.mode,
+                    args.parts,
+                    args.messages,
                 )
     elif args.command == "rx":
-        _live.receive(args.shape, args.input, args.record, args.mode)
+        _live.receive(args.shape, args.input, args.record, args.mode, args.messages)
     elif args.command == "abx":
         _abx_session(args)
     elif args.command == "check":

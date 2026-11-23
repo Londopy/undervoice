@@ -7,7 +7,7 @@ from typing import Protocol
 
 import numpy as np
 
-from . import _demodulator, _modulator, _subaudible
+from . import _demodulator, _modulator, _subaudible, _waveform
 from ._demodulator import Frame
 from ._frames import Frames
 from ._message import Message, Part
@@ -50,3 +50,8 @@ def decode(mode: str, audio: np.ndarray, shape: float) -> list[Frame]:
     if mode == SUB:
         return _subaudible.decode(audio)
     return _demodulator.decode(audio, shape)
+
+
+def frame_length(mode: str) -> int:
+    """Samples one frame takes in the mode."""
+    return _subaudible.FRAME if mode == SUB else _waveform.FRAME

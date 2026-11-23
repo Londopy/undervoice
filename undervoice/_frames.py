@@ -32,10 +32,13 @@ class Frames:
         with self._lock:
             self._queue.extend(rendered)
 
-    def cancel(self) -> None:
-        """Drop every part not yet sent. One already going out finishes its frame."""
+    def cancel(self) -> list[Part]:
+        """Drop every part not yet sent and return them. One already going out finishes its
+        frame, but is returned with the rest and never arrives on `sent`."""
         with self._lock:
+            parts = [p for p, _ in self._queue]
             self._queue.clear()
+            return parts
 
     @property
     def waiting(self) -> list[Part]:

@@ -96,6 +96,51 @@ def test_cli_encode_then_decode(speech, tmp_path, capsys):
     assert capsys.readouterr().out.count("W1AW FN31pr CLI TEST") == len(speech) // FRAME
 
 
+def test_cli_encode_then_decode_a_message(tmp_path, capsys):
+    mixed = tmp_path / "mixed.wav"
+    text = "Meet you on 146.52 at 7? Bring the antenna."
+    args = ["--call", "W1AW", "--to", "n0call", "--msg", text]
+    assert main(["encode", str(SPEECH), str(mixed), *args]) == 0
+    assert main(["decode", str(mixed)]) == 0
+    out = capsys.readouterr().out
+    assert "W1AW > N0CALL 1/2: MEET YOU ON 146.52 AT 7?" in out
+    [line] = [x for x in out.splitlines() if x.startswith("message: ")]
+    assert re.fullmatch(
+        r"message: \d{4}-\d\d-\d\d \d\d:\d\d  W1AW > N0CALL  "
+        + re.escape("MEET YOU ON 146.52 AT 7? BRING THE ANTENNA."),
+        line,
+    )
+
+
+def test_cli_decode_shows_a_message_cut_short_with_its_gap(speech, tmp_path, capsys):
+    # room for two of the three parts
+    short = tmp_path / "short.wav"
+    write_wav(short, speech[: 2 * FRAME + RATE])
+    mixed = tmp_path / "mixed.wav"
+    args = ["--call", "W1AW", "--msg", "X" * 24 + "Y" * 24 + "Z"]
+    assert main(["encode", str(short), str(mixed), *args]) == 0
+    assert main(["decode", str(mixed)]) == 0
+    [line] = [x for x in capsys.readouterr().out.splitlines() if x.startswith("message: ")]
+    assert line.endswith("  W1AW > ALL  " + "X" * 24 + "Y" * 24 + "[...]  (missing part 3 of 3)")
+
+
+@pytest.mark.parametrize(
+    "argv, error",
+    [
+        (["tx", "--call", "W1AW", "--msg", "price $5"], "outside A-Z 0-9"),
+        (["tx", "--call", "W1AW", "--to", "N0CALL"], "--to needs --msg"),
+        (["tx", "--call", "W1AW", "--to", "TOOLONGCALL1", "--msg", "HI"], "to callsign"),
+        (["encode", "in.wav", "out.wav", "--call", "W1AW", "--msg", "X" * 385], "385 characters"),
+    ],
+)
+def test_cli_refuses_a_message_it_cannot_send(argv, error, capsys):
+    # a parser error, before anything is read or any sound card opened
+    with pytest.raises(SystemExit) as e:
+        main(argv)
+    assert e.value.code == 2
+    assert error in capsys.readouterr().err
+
+
 def test_pause_level_keeps_data_in_the_gaps(speech):
     clip = speech[: 10 * RATE]
     hop = 160

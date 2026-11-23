@@ -7,9 +7,10 @@ import sys
 import threading
 import time
 import wave
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from types import ModuleType
 from typing import Any
 
@@ -20,7 +21,8 @@ from ._audio import Decimator, Interpolator, to_int16
 from ._cwid import due, morse
 from ._demodulator import Frame
 from ._frames import Frames
-from ._message import Message
+from ._message import Message, Part
+from ._messages import Inbox, append, heard_line, line
 from ._modes import VOICE, decode, encode, mixer
 from ._modulator import Modulator
 from ._ptt import Keyer, SetupError, choices
@@ -234,8 +236,8 @@ def _enter_presses() -> queue.Queue[str]:
     presses: queue.Queue[str] = queue.Queue()
 
     def read() -> None:
-        for line in sys.stdin:
-            presses.put(line)
+        for press in sys.stdin:
+            presses.put(press)
 
     threading.Thread(target=read, daemon=True).start()
     return presses
@@ -244,6 +246,21 @@ def _enter_presses() -> queue.Queue[str]:
 def _report(problems: queue.Queue[str]) -> None:
     while not problems.empty():
         print(f"sound card: {problems.get()}", file=sys.stderr)
+
+
+def _log(path: str, text: str) -> None:
+    try:
+        append(path, text)
+    except OSError as e:
+        print(f"can't write to {path}: {e.strerror or e}", file=sys.stderr)
+
+
+def log_sent(path: str | None, parts: Sequence[Part]) -> None:
+    """Add a message that has gone out to the messages file, if there is one."""
+    if path:
+        first = parts[0]
+        text = "".join(p.text for p in parts)
+        _log(path, line(datetime.now().astimezone(), first.sender, first.to, text))
 
 
 def transmit(
@@ -257,15 +274,33 @@ def transmit(
     pause_db: float | None = None,
     cw_id: bool = False,
     mode: str = VOICE,
+    parts: Sequence[Part] = (),
+    log: str | None = None,
 ) -> None:
     """Mic in, speech with data out, until Ctrl+C. With ptt, Enter keys and unkeys the radio.
     With cw_id, an over ends with the callsign in Morse when an ID is due: the first over,
-    then any that ends 9 minutes or more after the last ID. Without ptt the run is one over."""
+    then any that ends 9 minutes or more after the last ID. Without ptt the run is one over.
+    Message parts go out first, carried over from one over to the next; with log, the message
+    is added to that file once its last part has gone."""
     tx = Transmitter(message, level_db, shape, src, dst, ptt, txdelay, pause_db, mode)
+    tx.frames.send(parts)
     last_id: float | None = None
 
     def id_due() -> bool:
         return cw_id and due(last_id)
+
+    def report_sent() -> None:
+        while not tx.frames.sent.empty():
+            part = tx.frames.sent.get()
+            print(f"sent part {part.index + 1} of {part.total}")
+            if part.index == part.total - 1:
+                print("message sent")
+                log_sent(log, parts)
+
+    def report_left(what: str) -> None:
+        n = len(tx.frames.waiting)
+        if n:
+            print(f"{n} message part{'s' if n > 1 else ''} {what}")
 
     try:
         if ptt is None:
@@ -276,6 +311,7 @@ def transmit(
             presses = _enter_presses()
         while tx.active:
             _report(tx.sender.problems)
+            report_sent()
             if ptt is None:
                 time.sleep(0.5)
                 continue
@@ -290,11 +326,17 @@ def transmit(
                         last_id = time.monotonic()
                 tx.unkey()
                 print("receiving")
+                report_sent()
+                report_left("left for the next over")
             else:
                 tx.key()
                 print(f"transmitting {message}")
     finally:
-        tx.close(identify=id_due())
+        try:
+            tx.close(identify=id_due())
+        finally:
+            report_sent()
+            report_left("did not go out")
     raise SetupError("audio stream stopped")
 
 
@@ -309,11 +351,12 @@ def play(
     pause_db: float | None = None,
     cw_id: bool = False,
     mode: str = VOICE,
+    parts: Sequence[Part] = (),
 ) -> None:
-    """Play a recording with data mixed in, keying the radio around it when ptt is given, and
-    ending with the callsign in Morse when cw_id is set."""
+    """Play a recording with data mixed in, message parts first, keying the radio around it
+    when ptt is given, and ending with the callsign in Morse when cw_id is set."""
     sd = _sd()
-    mixed = encode(mode, speech, message, level_db, shape, pause_db)
+    mixed = encode(mode, speech, message, level_db, shape, pause_db, parts)
     if cw_id:
         mixed = np.concatenate([mixed, np.zeros(RATE // 4), morse(message.call)])
     audio = resample_poly(mixed, 6, 1)
@@ -431,10 +474,29 @@ class Listener:
                 self.heard.put(Heard(time.time(), frame))
 
 
-def receive(shape: float, src: Device, record: str | None = None, mode: str = VOICE) -> None:
-    """Print every frame heard on the input, until Ctrl+C. With record, also save the
-    received audio to a WAV file so a session can be decoded again offline."""
+def _file_part(inbox: Inbox, part: Part, when: float, log: str | None) -> None:
+    m = inbox.add(part, datetime.fromtimestamp(when).astimezone())
+    if m is None or not m.complete:
+        return
+    print(f"message: {heard_line(m)}", flush=True)
+    if log:
+        _log(log, heard_line(m))
+        m.logged = True
+
+
+def receive(
+    shape: float,
+    src: Device,
+    record: str | None = None,
+    mode: str = VOICE,
+    log: str | None = None,
+) -> None:
+    """Print every frame heard on the input, and each message once all its parts are in,
+    until Ctrl+C. With record, also save the received audio to a WAV file so a session can
+    be decoded again offline. With log, add each message to that text file as it completes;
+    those still missing parts go in as they stand when listening stops."""
     listener = Listener(shape, src, record, mode)
+    inbox = Inbox()
     print("listening, Ctrl+C to stop" + (f", recording to {record}" if record else ""))
     try:
         while listener.running:
@@ -442,10 +504,16 @@ def receive(shape: float, src: Device, record: str | None = None, mode: str = VO
                 h = listener.heard.get(timeout=0.5)
                 stamp = time.strftime("%H:%M:%SZ", time.gmtime(h.when))
                 print(f"{stamp}  {h.frame.message}  (snr {h.frame.snr_db:.1f} dB)", flush=True)
+                if isinstance(h.frame.message, Part):
+                    _file_part(inbox, h.frame.message, h.when, log)
             except queue.Empty:
                 pass
             while not listener.notes.empty():
                 print(listener.notes.get(), file=sys.stderr)
     finally:
         listener.stop()
+        if log:
+            for m in inbox.messages:
+                if not m.logged:
+                    _log(log, heard_line(m))
     raise SetupError("audio stream stopped")
