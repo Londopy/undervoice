@@ -106,7 +106,7 @@ def test_cli_encode_then_decode_a_message(tmp_path, capsys):
     assert "W1AW > N0CALL 1/2: MEET YOU ON 146.52 AT 7?" in out
     [line] = [x for x in out.splitlines() if x.startswith("message: ")]
     assert re.fullmatch(
-        r"message: \d{4}-\d\d-\d\d \d\d:\d\d  W1AW > N0CALL  "
+        r"message: \d{4}-\d\d-\d\d \d\d:\d\dZ  W1AW > N0CALL  "
         + re.escape("MEET YOU ON 146.52 AT 7? BRING THE ANTENNA."),
         line,
     )
@@ -119,6 +119,11 @@ def test_cli_decode_shows_a_message_cut_short_with_its_gap(speech, tmp_path, cap
     mixed = tmp_path / "mixed.wav"
     args = ["--call", "W1AW", "--msg", "X" * 24 + "Y" * 24 + "Z"]
     assert main(["encode", str(short), str(mixed), *args]) == 0
+    err = capsys.readouterr().err
+    assert (
+        f"{short} is too short or has too little speech for the whole message: part 3 of 3 won't go out"
+        in err
+    )
     assert main(["decode", str(mixed)]) == 0
     [line] = [x for x in capsys.readouterr().out.splitlines() if x.startswith("message: ")]
     assert line.endswith("  W1AW > ALL  " + "X" * 24 + "Y" * 24 + "[...]  (missing part 3 of 3)")
@@ -268,3 +273,17 @@ def test_tx_reminds_you_to_identify_unless_cw_id_will(cw_id, reminded, capsys):
     with pytest.raises(SystemExit):
         main(["tx", "--call", "W1AW", "--play", str(SPEECH), *cw_id])
     assert ("give your callsign by voice" in capsys.readouterr().err) == reminded
+
+
+def test_cli_encode_counts_only_parts_that_speech_carried(speech, tmp_path, capsys):
+    # three frames' worth, but the first is silent, so only two parts get through
+    quiet_start = tmp_path / "quiet_start.wav"
+    write_wav(quiet_start, np.concatenate([np.zeros(FRAME), speech[: 2 * FRAME + RATE]]))
+    args = ["--call", "W1AW", "--msg", "X" * 24 + "Y" * 24 + "Z"]
+    assert main(["encode", str(quiet_start), str(tmp_path / "out.wav"), *args]) == 0
+    assert "part 3 of 3 won't go out" in capsys.readouterr().err
+
+
+def test_tx_refuses_a_messages_file_it_cannot_write_before_keying(tmp_path):
+    with pytest.raises(SystemExit, match="can't write to"):
+        main(["tx", "--call", "W1AW", "--msg", "HI", "--messages", str(tmp_path), "--ptt", "COM9"])

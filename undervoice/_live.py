@@ -10,7 +10,7 @@ import wave
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from types import ModuleType
 from typing import Any
 
@@ -248,11 +248,24 @@ def _report(problems: queue.Queue[str]) -> None:
         print(f"sound card: {problems.get()}", file=sys.stderr)
 
 
-def _log(path: str, text: str) -> None:
+def _log(path: str, text: str) -> bool:
+    """Add a line to the messages file. False, after saying why, if it could not be written."""
     try:
         append(path, text)
     except OSError as e:
         print(f"can't write to {path}: {e.strerror or e}", file=sys.stderr)
+        return False
+    return True
+
+
+def check_log(path: str) -> None:
+    """Raise SetupError now, before keying or listening, if the messages file can't be
+    written to."""
+    try:
+        with open(path, "a", encoding="utf-8"):
+            pass
+    except OSError as e:
+        raise SetupError(f"can't write to {path}: {e.strerror or e}") from e
 
 
 def log_sent(path: str | None, parts: Sequence[Part]) -> None:
@@ -260,7 +273,7 @@ def log_sent(path: str | None, parts: Sequence[Part]) -> None:
     if path:
         first = parts[0]
         text = "".join(p.text for p in parts)
-        _log(path, line(datetime.now().astimezone(), first.sender, first.to, text))
+        _log(path, line(datetime.now(UTC), first.sender, first.to, text))
 
 
 def transmit(
@@ -475,13 +488,12 @@ class Listener:
 
 
 def _file_part(inbox: Inbox, part: Part, when: float, log: str | None) -> None:
-    m = inbox.add(part, datetime.fromtimestamp(when).astimezone())
+    m = inbox.add(part, datetime.fromtimestamp(when, UTC))
     if m is None or not m.complete:
         return
     print(f"message: {heard_line(m)}", flush=True)
     if log:
-        _log(log, heard_line(m))
-        m.logged = True
+        m.logged = _log(log, heard_line(m))
 
 
 def receive(
@@ -495,11 +507,14 @@ def receive(
     until Ctrl+C. With record, also save the received audio to a WAV file so a session can
     be decoded again offline. With log, add each message to that text file as it completes;
     those still missing parts go in as they stand when listening stops."""
+    if log:
+        check_log(log)
     listener = Listener(shape, src, record, mode)
     inbox = Inbox()
     print("listening, Ctrl+C to stop" + (f", recording to {record}" if record else ""))
     try:
-        while listener.running:
+        # frames heard just before the input stopped are still waiting in the queue
+        while listener.running or not listener.heard.empty():
             try:
                 h = listener.heard.get(timeout=0.5)
                 stamp = time.strftime("%H:%M:%SZ", time.gmtime(h.when))

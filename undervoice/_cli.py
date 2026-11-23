@@ -16,7 +16,7 @@ from ._audio import read_wav, write_wav
 from ._channel import fm_channel
 from ._message import MAX_PARTS, PART_LEN, Message, Part, split
 from ._messages import Inbox, heard_line
-from ._modes import MODES, VOICE, decode, encode, frame_length
+from ._modes import MODES, VOICE, decode, mix
 from ._modulator import LEVEL_DB, SHAPE
 from ._ptt import Keyer, SetupError, open_keyer
 from ._sweep import sweep
@@ -80,6 +80,20 @@ def _parts(parser: argparse.ArgumentParser, args: argparse.Namespace) -> list[Pa
         return split(args.call, to or "", text, random.randrange(64))
     except ValueError as e:
         parser.error(str(e))
+
+
+def _left_out(args: argparse.Namespace, gone: list[Part], path: str) -> list[Part]:
+    """The message parts the recording didn't carry, said on stderr."""
+    left_out = args.parts[len(gone) :]
+    if left_out:
+        noun = "part" if len(left_out) == 1 else "parts"
+        numbers = ", ".join(str(p.index + 1) for p in left_out)
+        print(
+            f"{path} is too short or has too little speech for the whole message: {noun} {numbers} "
+            f"of {len(args.parts)} won't go out",
+            file=sys.stderr,
+        )
+    return left_out
 
 
 def _check_setup(args: argparse.Namespace) -> None:
@@ -368,9 +382,10 @@ def _run(args: argparse.Namespace) -> int:
     if args.command == "encode":
         recording = _read(args.input)
         message = _message(args)
-        mixed = encode(
+        mixed, gone = mix(
             args.mode, recording, message, args.level, args.shape, args.pause_level, args.parts
         )
+        _left_out(args, gone, args.input)
         write_wav(args.output, mixed)
     elif args.command == "decode":
         frames = decode(args.mode, _read(args.input), args.shape)
@@ -422,19 +437,22 @@ def _run(args: argparse.Namespace) -> int:
                 "(97.119), or add --cw-id to send it in Morse",
                 file=sys.stderr,
             )
+        if args.messages:
+            _live.check_log(args.messages)
         with _keyer(args) as ptt:
             if args.play:
                 recording = _read(args.play)
                 print(f"playing {len(recording) / RATE:.1f} s with {message}")
-                left_out = args.parts[len(recording) // frame_length(args.mode) :]
-                if left_out:
-                    noun = "part" if len(left_out) == 1 else "parts"
-                    numbers = ", ".join(str(p.index + 1) for p in left_out)
-                    print(
-                        f"{args.play} is too short for the whole message: {noun} {numbers} "
-                        f"of {len(args.parts)} won't go out",
-                        file=sys.stderr,
-                    )
+                gone = mix(
+                    args.mode,
+                    recording,
+                    message,
+                    args.level,
+                    args.shape,
+                    args.pause_level,
+                    args.parts,
+                )[1]
+                left_out = _left_out(args, gone, args.play)
                 _live.play(
                     recording,
                     message,

@@ -10,6 +10,7 @@ import numpy as np
 from . import _demodulator, _modulator, _subaudible, _waveform
 from ._demodulator import Frame
 from ._frames import Frames
+from ._lpc import HOP
 from ._message import Message, Part
 
 VOICE = "voice"
@@ -32,6 +33,30 @@ def mixer(
     return _modulator.Modulator(message, level_db, shape, pause_db)
 
 
+def mix(
+    mode: str,
+    speech: np.ndarray,
+    message: Message,
+    level_db: float,
+    shape: float,
+    pause_db: float | None = None,
+    parts: Sequence[Part] = (),
+) -> tuple[np.ndarray, list[Part]]:
+    """A whole recording with the message parts and then message mixed in, and the parts that
+    went out in it, which can be fewer than fit when the recording has long silences."""
+    mod = mixer(mode, message, level_db, shape, pause_db)
+    mod.frames.send(parts)
+    if mode == SUB:
+        mixed = mod.process(speech)
+    else:
+        # the voice modulator runs a hop behind, so run one more and drop the first
+        mixed = mod.process(np.concatenate([speech, np.zeros(HOP)]))[HOP:]
+    sent = []
+    while not mod.frames.sent.empty():
+        sent.append(mod.frames.sent.get_nowait())
+    return mixed, sent
+
+
 def encode(
     mode: str,
     speech: np.ndarray,
@@ -41,9 +66,7 @@ def encode(
     pause_db: float | None = None,
     parts: Sequence[Part] = (),
 ) -> np.ndarray:
-    if mode == SUB:
-        return _subaudible.encode(speech, message, level_db, parts)
-    return _modulator.encode(speech, message, level_db, shape, pause_db, parts)
+    return mix(mode, speech, message, level_db, shape, pause_db, parts)[0]
 
 
 def decode(mode: str, audio: np.ndarray, shape: float) -> list[Frame]:
