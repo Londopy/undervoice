@@ -6,15 +6,14 @@ from __future__ import annotations
 import math
 import os
 import queue
-import random
 import sys
 import threading
 import time
 import tkinter as tk
 import tomllib
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from tkinter import filedialog, font, ttk
+from tkinter import filedialog, font, messagebox, ttk
 from typing import Any
 
 from . import _config, _updater
@@ -22,10 +21,10 @@ from ._audio import read_wav
 from ._check import MicCheck, MicResult, finish, key_briefly, play_back
 from ._cwid import ID_EVERY, due
 from ._frames import Frames
-from ._modes import SUB, VOICE, frame_length
+from ._modes import SUB, VOICE, frame_length, mix
 from ._live import Heard, Listener, Transmitter, cards, play, stop_playing
 from ._message import MAX_PARTS, PART_LEN, Message, Part, normalize, split
-from ._messages import Inbox, append, heard_line, line
+from ._messages import Inbox, append, heard_line, line, stamp
 from ._modulator import LEVEL_DB, SHAPE
 from ._ptt import Keyer, SetupError, choices, open_keyer
 from ._waveform import RATE
@@ -109,6 +108,20 @@ def _plural(n: int, noun: str) -> str:
     return f"{n} {noun}{'' if n == 1 else 's'}"
 
 
+def _about(when: datetime, sender: str, to: str, gaps: str = "") -> str:
+    about = f"From {sender} to {to or 'everyone'}, {stamp(when)}"
+    return f"{about}, {gaps}" if gaps else about
+
+
+def _recording_parts(going: int, left: int) -> str:
+    """What a recording carries of the queued message parts, for the status line."""
+    text = f" and {_plural(going, 'message part')}" if going else ""
+    if left:
+        waits = "waits" if left == 1 else "wait"
+        text += f"; {_plural(left, 'part')} that won't fit {waits} for your next over"
+    return text
+
+
 def _icon(accent: str) -> tk.PhotoImage:
     # a speech waveform with a thin steady data line under it
     img = tk.PhotoImage(width=32, height=32)
@@ -149,25 +162,31 @@ class App:
         self.checking = False
         self.available: _updater.Release | None = None
         self.inbox = Inbox()
-        # message parts held for the next over, the messages queued and not all gone out yet,
-        # the last one queued for Send again, and who the last to go out all the way was for
+        # message parts held for the next over, those mixed into the recording going out now,
+        # the messages queued and not all gone out yet, the last one queued for Send again,
+        # and who the last to go out all the way was for
         self.unsent: list[Part] = []
+        self.playing: list[Part] = []
         self.outbox: list[list[Part]] = []
         self.last_message: list[Part] = []
         self.sent_to: str | None = None
         self.draft_parts: list[Part] = []
+        # for each row of the messages list, who and when, and the whole text
+        self.details: dict[str, tuple[str, str]] = {}
         settings_problem = None
         try:
             self.settings = _config.load(self.settings_path)
         except tomllib.TOMLDecodeError as e:
             self.settings = _config.defaults()
             settings_problem = f"{self.settings_path} is not valid TOML ({e}); using defaults."
+        number = self.settings["messages"]["next_number"]
+        self.next_number = number % 64 if isinstance(number, int) else 0
 
         root.title("undervoice")
         self._icon = _icon(self.c["accent"])
         root.iconphoto(True, self._icon)
-        root.minsize(760, 820)
-        root.geometry("900x940")
+        root.minsize(760, 600)
+        root.geometry("900x700")
         self._style()
         if self.dark:
             _dark_title_bar(root)
@@ -177,16 +196,15 @@ class App:
         self.keyers: list[tuple[str, str | None]] = [(NO_PTT, None)]
         setup_problem = self._load_devices()
 
+        # packed first, so a short window takes its room from the tabs and never from it
+        self._status_bar(root)
         outer = ttk.Frame(root, padding=(12, 10, 12, 0))
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(3, weight=1)
+        outer.rowconfigure(2, weight=1)
         self._station(outer).grid(row=0, column=0, sticky="ew")
         self._radio(outer).grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        self._messages(outer).grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        self._receive(outer).grid(row=3, column=0, sticky="nsew", pady=(8, 0))
-        self._updates(outer).grid(row=4, column=0, sticky="ew", pady=(8, 0))
-        self._status_bar(root)
+        self._tabs(outer).grid(row=2, column=0, sticky="nsew", pady=(8, 0))
         self._apply_settings()
 
         root.bind("<Escape>", lambda e: self.stop_sending())
@@ -195,7 +213,7 @@ class App:
         # Space is the talk key here, so buttons take Enter instead of Space
         root.unbind_class("TButton", "<Key-space>")
         root.bind_class("TButton", "<Return>", lambda e: e.widget.tk.call(str(e.widget), "invoke"))
-        root.protocol("WM_DELETE_WINDOW", self.close)
+        root.protocol("WM_DELETE_WINDOW", self.close_window)
         self._check_message()
         _updater.tidy()
         if setup_problem or settings_problem:
@@ -247,6 +265,13 @@ class App:
         s.map("TCombobox", fieldbackground=[("readonly", c["field"])])
         s.configure("TCheckbutton", indicatorbackground=c["field"], indicatorforeground=c["ink"])
         s.map("TCheckbutton", background=[("active", c["bg"])])
+        s.configure("TNotebook", background=c["bg"], bordercolor=c["line"])
+        s.configure("TNotebook.Tab", background=c["bg"], foreground=c["muted"], padding=(12, 4))
+        s.map(
+            "TNotebook.Tab",
+            background=[("selected", c["field"]), ("active", "#353535")],
+            foreground=[("selected", c["ink"])],
+        )
         s.configure("Treeview", background=c["field"], rowheight=22, font=(self.mono, 9))
         s.configure("Treeview.Heading", background=c["bg"], foreground=c["muted"], relief="flat")
         s.map("Treeview.Heading", background=[("active", c["field"])])
@@ -339,6 +364,7 @@ class App:
 
         actions = ttk.Frame(f)
         actions.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(4, 2))
+        actions.columnconfigure(2, weight=1)
         self.tx_button = ttk.Button(actions, text="Transmit", width=18, command=self.toggle_tx)
         self.tx_button.grid(row=0, column=0, padx=(0, 8))
         self.send_button = ttk.Button(
@@ -346,8 +372,18 @@ class App:
         )
         self.send_button.grid(row=0, column=1)
         ttk.Label(actions, text="or hold Space to talk; Esc stops", style="Muted.TLabel").grid(
-            row=0, column=2, padx=(12, 0)
+            row=0, column=2, sticky="w", padx=(12, 0)
         )
+        # here rather than with Received, so the mic check shows its level on any tab
+        meter = ttk.Frame(actions)
+        meter.grid(row=0, column=3, sticky="e")
+        ttk.Label(meter, text="Input").grid(row=0, column=0, padx=(0, 6))
+        self.meter = tk.Canvas(
+            meter, width=160, height=8, background=self.c["meter"], highlightthickness=0
+        )
+        self.meter.grid(row=0, column=1)
+        self.meter_text = ttk.Label(meter, text="", style="Muted.TLabel", width=9, anchor="e")
+        self.meter_text.grid(row=0, column=2)
 
         tests = ttk.Frame(f)
         tests.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(6, 2))
@@ -365,16 +401,44 @@ class App:
         ).grid(row=0, column=2, padx=(12, 0))
         return f
 
-    def _messages(self, parent: ttk.Frame) -> ttk.LabelFrame:
-        f = ttk.LabelFrame(parent, text="Messages", padding=(10, 6))
+    def _tabs(self, parent: ttk.Frame) -> ttk.Notebook:
+        self.tabs = ttk.Notebook(parent)
+        self.pages = {
+            "Messages": self._messages(self.tabs),
+            "Received": self._receive(self.tabs),
+            "Updates": self._updates(self.tabs),
+        }
+        for name, page in self.pages.items():
+            self.tabs.add(page, text=name)
+        self.unseen = dict.fromkeys(self.pages, 0)
+        self.tabs.bind("<<NotebookTabChanged>>", lambda e: self._seen())
+        return self.tabs
+
+    def _new_on(self, name: str) -> None:
+        """Count what arrives on a tab that isn't showing, in the tab's name."""
+        page = self.pages[name]
+        if self.tabs.select() != str(page):
+            self.unseen[name] += 1
+            self.tabs.tab(page, text=f"{name} ({self.unseen[name]})")
+
+    def _seen(self) -> None:
+        name = next(n for n, page in self.pages.items() if str(page) == self.tabs.select())
+        self.unseen[name] = 0
+        self.tabs.tab(self.pages[name], text=name)
+
+    def _messages(self, parent: ttk.Notebook) -> ttk.Frame:
+        f = ttk.Frame(parent, padding=(10, 8))
         f.columnconfigure(1, weight=1)
         f.rowconfigure(0, weight=1)
-        self._compose(f).grid(row=0, column=0, rowspan=2, sticky="nw", padx=(0, 12))
+        f.rowconfigure(1, weight=1)
+        self._compose(f).grid(row=0, column=0, rowspan=3, sticky="nw", padx=(0, 12))
         columns = ("time", "from", "to", "text")
-        # three rows asked for, stretched to the height of the box and buttons beside it
-        self.message_list = ttk.Treeview(f, columns=columns, show="headings", height=3)
+        # the list and the message under it share whatever height the window has
+        self.message_list = ttk.Treeview(
+            f, columns=columns, show="headings", height=2, selectmode="browse"
+        )
         for col, label, width, stretch in (
-            ("time", "Time", 50, False),
+            ("time", "UTC", 50, False),
             ("from", "From", 80, False),
             ("to", "To", 80, False),
             ("text", "Message", 200, True),
@@ -389,12 +453,21 @@ class App:
         scroll = ttk.Scrollbar(f, orient="vertical", command=self.message_list.yview)
         scroll.grid(row=0, column=2, sticky="ns")
         self.message_list.configure(yscrollcommand=scroll.set)
+        self.message_list.bind("<<TreeviewSelect>>", lambda e: self._show_detail())
+        # a row shows about 32 characters of up to 384, so the whole message goes here
+        self.detail = self._text_box(f, height=4, width=20, takefocus=0)
+        self.detail.tag_configure("about", foreground=self.c["muted"])
+        self.detail.grid(row=1, column=1, sticky="nsew", pady=(6, 0))
+        scroll = ttk.Scrollbar(f, orient="vertical", command=self.detail.yview)
+        scroll.grid(row=1, column=2, sticky="ns", pady=(6, 0))
+        self.detail.configure(yscrollcommand=scroll.set)
+        self._show_detail()
         self.progress = ttk.Label(f)
-        self.progress.grid(row=1, column=1, columnspan=2, sticky="w", pady=(4, 0))
-        self._messages_file(f).grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self.progress.grid(row=2, column=1, columnspan=2, sticky="w", pady=(4, 0))
+        self._messages_file(f).grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         return f
 
-    def _compose(self, parent: ttk.LabelFrame) -> ttk.Frame:
+    def _compose(self, parent: ttk.Frame) -> ttk.Frame:
         f = ttk.Frame(parent)
         to = ttk.Frame(f)
         to.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
@@ -405,30 +478,7 @@ class App:
         ttk.Label(to, text="blank for everyone", style="Muted.TLabel").grid(
             row=0, column=2, padx=(8, 0)
         )
-        c = self.c
-        self.draft = tk.Text(
-            f,
-            height=3,
-            width=44,
-            wrap="word",
-            font="TkTextFont",
-            relief="flat",
-            borderwidth=0,
-            padx=6,
-            pady=4,
-            highlightthickness=1,
-            highlightbackground=c["line"],
-            highlightcolor=c["accent"],
-        )
-        if self.dark:
-            self.draft.configure(
-                background=c["field"],
-                foreground=c["ink"],
-                insertbackground=c["ink"],
-                selectbackground=c["accent"],
-                selectforeground="#000000",
-                inactiveselectbackground=c["line"],
-            )
+        self.draft = self._text_box(f, height=3, width=44)
         self.draft.grid(row=1, column=0, sticky="ew")
         self.draft.bind("<<Modified>>", self._draft_edited)
         buttons = ttk.Frame(f)
@@ -447,12 +497,52 @@ class App:
         self.counter.grid(row=2, column=0, sticky="w", pady=(4, 0))
         return f
 
-    def _messages_file(self, parent: ttk.LabelFrame) -> ttk.Frame:
+    def _text_box(self, parent: tk.Misc, **options: Any) -> tk.Text:
+        """A text box drawn to match the ttk fields around it."""
+        c = self.c
+        box = tk.Text(
+            parent,
+            wrap="word",
+            font="TkTextFont",
+            relief="flat",
+            borderwidth=0,
+            padx=6,
+            pady=4,
+            highlightthickness=1,
+            highlightbackground=c["line"],
+            highlightcolor=c["accent"],
+            **options,
+        )
+        if self.dark:
+            box.configure(
+                background=c["field"],
+                foreground=c["ink"],
+                insertbackground=c["ink"],
+                selectbackground=c["accent"],
+                selectforeground="#000000",
+                inactiveselectbackground=c["line"],
+            )
+        return box
+
+    def _show_detail(self) -> None:
+        """The message picked in the list, or the newest when none is, in full."""
+        rows = self.message_list.selection() or self.message_list.get_children()[:1]
+        about, text = self.details[rows[0]] if rows else ("No messages yet.", "")
+        self.detail.configure(state="normal")
+        self.detail.delete("1.0", "end")
+        self.detail.insert("end", about, "about")
+        if text:
+            self.detail.insert("end", "\n" + text)
+        self.detail.configure(state="disabled")
+
+    def _messages_file(self, parent: ttk.Frame) -> ttk.Frame:
         f = ttk.Frame(parent)
         f.columnconfigure(1, weight=1)
         saved = self.settings["messages"]
         self.save_messages = tk.BooleanVar(value=bool(saved["save"]))
-        self.messages_path = str(saved["path"]) or str(_config.folder() / "messages.txt")
+        # beside config.toml, so a portable copy that is moved takes its messages along
+        self.default_log = self.settings_path.parent / "messages.txt"
+        self.messages_path = str(saved["path"]) or str(self.default_log)
         ttk.Checkbutton(f, text="Save messages to a text file", variable=self.save_messages).grid(
             row=0, column=0, sticky="w"
         )
@@ -464,8 +554,8 @@ class App:
         self._show_open()
         return f
 
-    def _receive(self, parent: ttk.Frame) -> ttk.LabelFrame:
-        f = ttk.LabelFrame(parent, text="Received", padding=(10, 6))
+    def _receive(self, parent: ttk.Notebook) -> ttk.Frame:
+        f = ttk.Frame(parent, padding=(10, 8))
         f.columnconfigure(2, weight=1)
         f.rowconfigure(1, weight=1)
         self.rx_button = ttk.Button(f, text="Listen", width=18, command=self.toggle_rx)
@@ -481,15 +571,6 @@ class App:
         ttk.Checkbutton(
             options, text="Record to file", variable=self.record, command=self._choose_record
         ).grid(row=0, column=1, sticky="w", padx=(10, 0))
-        meter = ttk.Frame(f)
-        meter.grid(row=0, column=2, sticky="e", pady=(0, 6))
-        ttk.Label(meter, text="Input").grid(row=0, column=0, padx=(0, 6))
-        self.meter = tk.Canvas(
-            meter, width=160, height=8, background=self.c["meter"], highlightthickness=0
-        )
-        self.meter.grid(row=0, column=1)
-        self.meter_text = ttk.Label(meter, text="", style="Muted.TLabel", width=9, anchor="e")
-        self.meter_text.grid(row=0, column=2)
 
         columns = ("time", "call", "grid", "status", "snr")
         self.log = ttk.Treeview(f, columns=columns, show="headings", height=4)
@@ -514,8 +595,8 @@ class App:
         self.empty.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
         return f
 
-    def _updates(self, parent: ttk.Frame) -> ttk.LabelFrame:
-        f = ttk.LabelFrame(parent, text="Updates", padding=(10, 6))
+    def _updates(self, parent: ttk.Notebook) -> ttk.Frame:
+        f = ttk.Frame(parent, padding=(10, 8))
         f.columnconfigure(6, weight=1)
         u = self.settings["updater"]
         self.auto_update = tk.BooleanVar(value=bool(u["enabled"]))
@@ -588,7 +669,11 @@ class App:
             "cw_id": self.cw_id.get(),
         }
         self.settings["receive"] = {"always": self.listen_always.get()}
-        self.settings["messages"] = {"save": self.save_messages.get(), "path": self.messages_path}
+        self.settings["messages"] = {
+            "save": self.save_messages.get(),
+            "path": "" if Path(self.messages_path) == self.default_log else self.messages_path,
+            "next_number": self.next_number,
+        }
         u = self.settings["updater"]
         u["enabled"] = self.auto_update.get()
         u["channel"] = "beta" if self.channel.get() == CHANNELS[1] else "stable"
@@ -805,22 +890,32 @@ class App:
         again = sendable and bool(self.last_message) and self.last_message not in self.outbox
         self.again_button.state(["!disabled"] if again else ["disabled"])
         going = self.tx.frames.waiting if self.tx else []
-        self.cancel_button.state(["!disabled"] if going or self.unsent else ["disabled"])
+        waiting = going or self.unsent or self.playing
+        self.cancel_button.state(["!disabled"] if waiting else ["disabled"])
         self.progress.configure(text=self._progress(going))
 
     def _progress(self, going: list[Part]) -> str:
         if going:
             p = going[0]
             return f"Sending part {p.index + 1} of {p.total} to {p.to or 'everyone'}"
+        said = []
+        if self.playing:
+            said.append(f"Sending {_plural(len(self.playing), 'part')} in the recording")
         if self.unsent:
             n = len(self.unsent)
-            return f"{_plural(n, 'part')} wait{'s' if n == 1 else ''} for your next over"
+            said.append(f"{_plural(n, 'part')} wait{'s' if n == 1 else ''} for your next over")
+        if said:
+            return "; ".join(said)
         if self.sent_to is not None:
             return f"Sent to {self.sent_to or 'everyone'}."
         return ""
 
     def _typing(self) -> bool:
-        return isinstance(self.root.focus_get(), (ttk.Entry, tk.Entry, tk.Text, ttk.Checkbutton))
+        focus = self.root.focus_get()
+        # the message shown under the list is read-only, so Space there still talks
+        if focus is self.detail:
+            return False
+        return isinstance(focus, (ttk.Entry, tk.Entry, tk.Text, ttk.Checkbutton))
 
     def _space_down(self, event: tk.Event) -> str | None:
         if self._typing():
@@ -909,22 +1004,29 @@ class App:
         ptt = self.ptt
         identify = self._id_due()
         mode = self._mode()
+        # the queued parts the recording carries; the rest wait
+        fit = len(mix(mode, speech, message, level, shape, pause, self.unsent)[1])
+        self.playing, self.unsent = self.unsent[:fit], self.unsent[fit:]
+        parts = self.playing
 
         def work() -> None:
-            ended_with_id = False
+            played = False
             try:
-                play(speech, message, level, shape, out, ptt, delay, pause, identify, mode)
-                ended_with_id = identify
+                play(speech, message, level, shape, out, ptt, delay, pause, identify, mode, parts)
+                played = True
             except (SetupError, OSError) as e:
                 self.events.put(("error", str(e)))
             finally:
-                self.events.put(("sent", ended_with_id))
+                self.events.put(("sent", (played, identify)))
 
         self.sending = True
         self.recording_cut = False
         self.helper = threading.Thread(target=work, daemon=True)
         self.helper.start()
-        self.say(f"Sending {path} ({len(speech) / RATE:.0f} s) with {message}.")
+        self.say(
+            f"Sending {path} ({len(speech) / RATE:.0f} s) with {message}"
+            f"{_recording_parts(len(parts), len(self.unsent))}."
+        )
         self._show_state()
 
     def _stop_recording(self) -> None:
@@ -941,11 +1043,13 @@ class App:
             if self._id_due():
                 tx, ptt = self.tx, self.ptt
                 self.tx, self.ptt = None, None
-                self._take_back(tx)
                 self.identifying = True
                 self.say("Sending your callsign in Morse before unkeying.")
                 self.helper = threading.Thread(target=self._identify, args=(tx, ptt), daemon=True)
                 self.helper.start()
+                # with the ID and unkeying under way, so a log write that hangs or fails
+                # can't hold them up
+                self._take_back(tx)
             elif self._release():
                 self.say("Stopped transmitting.")
         if self.sending:
@@ -980,16 +1084,19 @@ class App:
             self.say(f"Time to identify: say your callsign{stop}.", error=True)
 
     def _release(self) -> bool:
-        """Close the transmitter and PTT now. False, with the reason shown, if unkeying failed."""
+        """Close the transmitter and PTT now, then keep the parts the over didn't send. False,
+        with the reason shown, if unkeying failed."""
         tx, ptt = self.tx, self.ptt
         self.tx, self.ptt = None, None
-        if tx:
-            self._take_back(tx)
         try:
             _close(tx, ptt)
         except (SetupError, OSError) as e:
             self.say(f"Could not unkey the radio: {e}", error=True)
             return False
+        finally:
+            # after unkeying, so a log write that hangs or fails can't hold the radio keyed
+            if tx:
+                self._take_back(tx)
         return True
 
     def _take_back(self, tx: Transmitter) -> None:
@@ -1056,7 +1163,7 @@ class App:
     def _received(self, h: Heard) -> None:
         m = h.frame.message
         if isinstance(m, Part):
-            self._received_part(m, datetime.fromtimestamp(h.when).astimezone())
+            self._received_part(m, datetime.fromtimestamp(h.when, UTC))
         else:
             self.log.insert(
                 "",
@@ -1069,6 +1176,7 @@ class App:
                     f"{h.frame.snr_db:.1f} dB",
                 ),
             )
+            self._new_on("Received")
         self.empty.grid_remove()
 
     def _received_part(self, part: Part, when: datetime) -> None:
@@ -1082,6 +1190,9 @@ class App:
             self.message_list.item(row, values=values)
         else:
             self.message_list.insert("", 0, iid=row, values=values, tags=["mine"] if mine else [])
+        self.details[row] = (_about(m.first, m.sender, m.to, m.gaps), m.text)
+        self._show_detail()
+        self._new_on("Messages")
         if mine:
             self.say(f"Message from {m.sender}.")
         if m.complete:
@@ -1090,10 +1201,13 @@ class App:
     def send_message(self) -> None:
         text = self.draft.get("1.0", "end")
         try:
-            parts = split(self.call.get(), self.to_call.get(), text, random.randrange(64))
+            parts = split(self.call.get(), self.to_call.get(), text, self.next_number)
         except ValueError as e:
             self.say(str(e), error=True)
             return
+        # counted, and saved straight away, so messages close together never share a number
+        self.next_number = (self.next_number + 1) % 64
+        self._save_settings()
         self.draft.delete("1.0", "end")
         self._queue(parts)
 
@@ -1112,8 +1226,9 @@ class App:
         self._show_state()
 
     def cancel_message(self) -> None:
-        dropped = len(self.unsent)
-        self.unsent = []
+        # parts already mixed into a playing recording go out with it, but no longer count
+        dropped = len(self.unsent) + len(self.playing)
+        self.unsent, self.playing = [], []
         if self.tx:
             dropped += len(self.tx.frames.cancel())
             # a message whose last part went out just now has still gone
@@ -1124,17 +1239,31 @@ class App:
 
     def _check_sent(self, frames: Frames) -> None:
         while not frames.sent.empty():
-            part = frames.sent.get()
-            # parts go out in the order they were queued, so the oldest message finishes first
-            if self.outbox and part == self.outbox[0][-1]:
-                self._sent(self.outbox.pop(0))
-            self._show_state()
+            self._part_sent(frames.sent.get())
+
+    def _part_sent(self, part: Part) -> None:
+        # parts go out in the order they were queued, so the oldest message finishes first
+        if self.outbox and part == self.outbox[0][-1]:
+            self._sent(self.outbox.pop(0))
+        self._show_state()
+
+    def _played(self, whole: bool) -> None:
+        """The parts in a recording have gone once all of it has played; otherwise they go
+        again in the next over."""
+        parts, self.playing = self.playing, []
+        if not whole:
+            self.unsent = parts + self.unsent
+            return
+        for part in parts:
+            self._part_sent(part)
 
     def _sent(self, parts: list[Part]) -> None:
-        when = datetime.now().astimezone()
+        when = datetime.now(UTC)
         sender, to = parts[0].sender, parts[0].to
         text = "".join(p.text for p in parts)
-        self.message_list.insert("", 0, values=(f"{when:%H:%M}", sender, to or "ALL", text))
+        row = self.message_list.insert("", 0, values=(f"{when:%H:%M}", sender, to or "ALL", text))
+        self.details[row] = (_about(when, sender, to), text)
+        self._show_detail()
         self.sent_to = to
         self._log(line(when, sender, to, text))
 
@@ -1183,12 +1312,14 @@ class App:
 
     def _poll(self) -> None:
         if self.listener:
+            # read first: frames queued just before the input stopped are still to be shown
+            running = self.listener.running
             while not self.listener.heard.empty():
                 self._received(self.listener.heard.get())
             while not self.listener.notes.empty():
                 self.say(self.listener.notes.get(), error=True)
             self._draw_meter(self.mic_check.peak if self.mic_check else self.listener.peak)
-            if not self.listener.running:
+            if not running:
                 self.listener.stop()
                 self.listener = None
                 self._show_state()
@@ -1213,11 +1344,14 @@ class App:
         if kind == "error":
             self.say(str(detail), error=True)
         elif kind == "sent":
+            played, identified = detail
             self.sending = False
             self.last_over = time.monotonic()
-            if detail and not self.recording_cut:
+            whole = played and not self.recording_cut
+            if whole and identified:
                 self.last_id = self.last_over
             self._release()
+            self._played(whole)
             self._show_state()
         elif kind == "update":
             release, manual = detail
@@ -1355,6 +1489,20 @@ class App:
         self.meter.create_rectangle(0, 0, width, 8, fill=color, width=0)
         self.meter_text.configure(text=f"{db:.0f} dBFS")
 
+    def close_window(self) -> None:
+        """The window's close button: asks first when message parts have not gone out."""
+        going = self.tx.frames.waiting if self.tx else []
+        n = len(going) + len(self.unsent) + len(self.playing)
+        if n and not messagebox.askyesno(
+            "Close undervoice",
+            f"{_plural(n, 'message part')} {'has' if n == 1 else 'have'} not gone out and "
+            "will be lost. Close anyway?",
+            icon=messagebox.WARNING,
+            parent=self.root,
+        ):
+            return
+        self.close()
+
     def close(self) -> None:
         self._save_settings()
         self.stop_sending()
@@ -1366,8 +1514,9 @@ class App:
         if self.listener:
             self.listener.stop()
         self._release()
+        # those missing parts, and any whose write failed earlier
         for m in self.inbox.messages:
-            if not m.complete and not m.logged:
+            if not m.logged:
                 m.logged = self._log(heard_line(m))
         self.root.destroy()
 
@@ -1375,4 +1524,11 @@ class App:
 def run() -> None:
     root = tk.Tk()
     App(root)
+    # a 1366x768 laptop has about 720 px above its taskbar, too little for the window where
+    # Windows first puts it
+    if root.winfo_screenheight() < 850:
+        if root.tk.call("tk", "windowingsystem") == "x11":
+            root.attributes("-zoomed", True)
+        else:
+            root.state("zoomed")
     root.mainloop()

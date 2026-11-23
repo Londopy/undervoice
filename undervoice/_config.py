@@ -14,8 +14,9 @@ Settings = dict[str, dict[str, Any]]
 DEFAULTS: Settings = {
     "receive": {"always": True},
     "updater": {"enabled": True, "channel": "stable", "check_interval_h": 24, "last_check": 0},
-    # a blank path means messages.txt next to config.toml
-    "messages": {"save": False, "path": ""},
+    # a blank path means messages.txt next to config.toml; next_number counts the window's
+    # messages 0 to 63, so two sent close together never share a number
+    "messages": {"save": False, "path": "", "next_number": 0},
 }
 
 
