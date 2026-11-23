@@ -128,9 +128,11 @@ you key it yourself) and mixes the data into your microphone audio until you pre
 or hit Esc. Or hold **Space** to talk and let go to stop, like a PTT button (buttons take Enter
 instead of Space in this window). **Send a recording...** does the same with a WAV file. The window starts
 listening as soon as it opens (untick **Listen whenever undervoice is open** to start it by
-hand with **Listen**) and fills the Received table with each frame as it decodes, newest
-first. It shows the input level so you can set the radio's volume, and can record the session
-to a file. The window follows Windows' light or dark setting.
+hand with **Listen**) and fills the table on the **Received** tab with each frame as it
+decodes, newest first; a tab you aren't looking at counts what has come in. The **Input** meter
+shows the level so you can set the radio's volume, and **Received** can record the session to
+a file. **Messages** and **Updates** are the other tabs. The window follows Windows' light or
+dark setting, and fits a 1366x768 screen.
 
 ### Checking your setup
 
@@ -272,9 +274,14 @@ txdelay = "0.3"
 enabled = true
 channel = "stable"      # "stable" or "beta" (includes pre-releases)
 check_interval_h = 24
+
+[messages]
+save = false            # Save messages to a text file
+path = ""               # blank for messages.txt next to config.toml
+next_number = 5         # the window numbers its messages 0 to 63 in turn
 ```
 
-The Updates row checks GitHub Releases on that schedule and on **Check now**. When there is a
+The Updates tab checks GitHub Releases on that schedule and on **Check now**. When there is a
 newer version it offers **Download and install**; nothing installs until you click it. The
 download is checked against the release's `SHA256SUMS.txt` first and refused on a mismatch.
 An installed copy updates through the same installer it came from; a portable exe replaces
