@@ -416,6 +416,12 @@ def _run(args: argparse.Namespace) -> int:
             )
     elif args.command == "tx":
         message = _message(args)
+        if not args.cw_id:
+            print(
+                "give your callsign by voice every 10 minutes and at the end "
+                "(97.119), or add --cw-id to send it in Morse",
+                file=sys.stderr,
+            )
         with _keyer(args) as ptt:
             if args.play:
                 recording = _read(args.play)

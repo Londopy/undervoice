@@ -260,3 +260,11 @@ def test_cli_channel_flat_path_carries_what_the_voice_path_loses(speech, tmp_pat
     flat = frames_through("flat")
     assert flat == len(speech) // SUB_FRAME
     assert frames_through("voice") < flat
+
+
+@pytest.mark.parametrize("cw_id, reminded", [([], True), (["--cw-id"], False)])
+def test_tx_reminds_you_to_identify_unless_cw_id_will(cw_id, reminded, capsys):
+    # the sound card is blocked here, so tx stops right after starting
+    with pytest.raises(SystemExit):
+        main(["tx", "--call", "W1AW", "--play", str(SPEECH), *cw_id])
+    assert ("give your callsign by voice" in capsys.readouterr().err) == reminded
